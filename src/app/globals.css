@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Tailwind's dark: variant now follows the explicit data-theme attribute
+   (set by ThemeScript/ThemeProvider) instead of prefers-color-scheme
+   directly — "auto" mode still tracks the OS preference, but does so by
+   having JS resolve it to a concrete data-theme value, so light/dark/auto
+   all go through the same single mechanism. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -12,11 +19,24 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/* Fallback for the instant before ThemeScript runs (and for no-JS) — mirrors
+   the OS preference. ThemeScript overrides this synchronously pre-paint via
+   the [data-theme] rule below, which always wins once it applies. */
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
   }
+}
+
+:root[data-theme="dark"] {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+}
+
+:root[data-theme="light"] {
+  --background: #ffffff;
+  --foreground: #171717;
 }
 
 body {

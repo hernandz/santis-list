@@ -290,7 +290,6 @@ export async function GET(request: Request) {
   if (maxPrice != null) conditions.push({ price: { lte: maxPrice } });
   if (minBedrooms != null) conditions.push({ bedrooms: { gte: minBedrooms } });
   if (minBathrooms != null) conditions.push({ bathrooms: { gte: minBathrooms } });
-  if (forMap) conditions.push({ latitude: { not: null }, longitude: { not: null } });
 
   // Auto-apply every active saved search: a listing counts if it satisfies at
   // least one watch's full criteria (city + price + bed/bath + neighborhoods),
@@ -316,6 +315,12 @@ export async function GET(request: Request) {
     conditions.push(watch ? { AND: watchSqlConditions(watch) } : { id: "__none__" });
   }
 
+  // Kept separate from `where` so the map can report how many otherwise-
+  // matching listings simply have no location to plot (Craigslist doesn't
+  // always provide one) — computed before the geo requirement is added below.
+  const whereRegardlessOfLocation: Prisma.ListingWhereInput = conditions.length > 0 ? { AND: conditions } : {};
+
+  if (forMap) conditions.push({ latitude: { not: null }, longitude: { not: null } });
   const where: Prisma.ListingWhereInput = conditions.length > 0 ? { AND: conditions } : {};
 
   const scopeHasNeighborhoods = scopeWatches?.some((w) => w.neighborhoods.length > 0) ?? false;
@@ -343,7 +348,7 @@ export async function GET(request: Request) {
     const skip = forMap ? 0 : (page - 1) * PAGE_SIZE;
     const take = forMap ? MAP_LIMIT : PAGE_SIZE;
 
-    const [total, listings] = await Promise.all([
+    const [total, listings, totalRegardlessOfLocation] = await Promise.all([
       prisma.listing.count({ where }),
       prisma.listing.findMany({
         where,
@@ -352,6 +357,7 @@ export async function GET(request: Request) {
         take,
         include: { matches: { include: { watch: { select: { id: true, name: true } } } } },
       }),
+      forMap ? prisma.listing.count({ where: whereRegardlessOfLocation }) : Promise.resolve(null),
     ]);
 
     const listingsEnriched = await Promise.all(listings.map(enrichListing));
@@ -365,6 +371,7 @@ export async function GET(request: Request) {
         pageSize: forMap ? MAP_LIMIT : PAGE_SIZE,
         total,
         totalPages: forMap ? 1 : Math.max(1, Math.ceil(total / PAGE_SIZE)),
+        ...(forMap ? { totalRegardlessOfLocation, notPlotted: (totalRegardlessOfLocation ?? total) - total } : {}),
       },
       { headers: { "Cache-Control": "no-store" } },
     );
@@ -377,7 +384,7 @@ export async function GET(request: Request) {
     sortingByCommute &&
     (commuteMode === "car" || commuteMode === "bike" || (commuteMode === "transit" && usesGoogleTransit()));
   const candidateCap = usesExternalCommuteApi ? COMMUTE_EXTERNAL_API_CAP : TRANSIT_SORT_CAP;
-  const [whereTotal, candidates] = await Promise.all([
+  const [whereTotal, candidates, totalRegardlessOfLocation] = await Promise.all([
     prisma.listing.count({ where }),
     prisma.listing.findMany({
       where,
@@ -385,6 +392,7 @@ export async function GET(request: Request) {
       take: candidateCap,
       include: { matches: { include: { watch: { select: { id: true, name: true } } } } },
     }),
+    forMap ? prisma.listing.count({ where: whereRegardlessOfLocation }) : Promise.resolve(null),
   ]);
   const truncated = whereTotal > candidates.length;
 
@@ -449,6 +457,9 @@ export async function GET(request: Request) {
       total,
       totalPages: forMap ? 1 : Math.max(1, Math.ceil(total / PAGE_SIZE)),
       truncated,
+      ...(forMap
+        ? { totalRegardlessOfLocation, notPlotted: Math.max(0, (totalRegardlessOfLocation ?? total) - total) }
+        : {}),
     },
     { headers: { "Cache-Control": "no-store" } },
   );

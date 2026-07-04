@@ -11,7 +11,16 @@ export function proxy(request: NextRequest) {
   if (!password) return NextResponse.next();
 
   const { pathname } = request.nextUrl;
-  if (pathname === "/login" || pathname === "/api/login") return NextResponse.next();
+  // The pause link is clicked directly from an email client with no
+  // session — it's authorized by its own per-watch token, not the site
+  // password, so it must stay reachable without logging in first.
+  if (
+    pathname === "/login" ||
+    pathname === "/api/login" ||
+    /^\/api\/watches\/[^/]+\/pause$/.test(pathname)
+  ) {
+    return NextResponse.next();
+  }
 
   const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
   if (isValidAuthToken(token, password)) return NextResponse.next();

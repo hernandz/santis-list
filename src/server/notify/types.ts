@@ -12,6 +12,7 @@ export type NotificationPayload = {
   subject: string;
   watchName: string;
   listings: NotificationListingPayload[];
+  pauseUrl?: string;
 };
 
 export interface NotificationChannel {

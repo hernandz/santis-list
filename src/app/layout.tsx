@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
 import { CrawlStatusBadge } from "@/components/CrawlStatusBadge";
+import { ThemeScript } from "@/components/ThemeScript";
+import { ThemeSync } from "@/components/ThemeSync";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -28,8 +30,13 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
+      <head>
+        <ThemeScript />
+      </head>
       <body className="min-h-full flex flex-col">
+        <ThemeSync />
         <header className="border-b border-black/10 dark:border-white/15">
           <nav className="mx-auto max-w-5xl flex items-center gap-6 px-4 py-3 text-sm">
             <Link href="/" className="font-semibold flex items-center gap-1.5">

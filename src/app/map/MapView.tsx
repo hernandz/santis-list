@@ -27,11 +27,31 @@ export type MapListing = {
   commuteCar?: CommuteInfo | null;
   commuteBike?: CommuteInfo | null;
   commuteTransit?: CommuteInfo | null;
+  postedAt: string | null;
+  firstSeenAt: string;
 };
 
 function formatCommuteInfo(commute: CommuteInfo | null | undefined): string | null {
   if (!commute) return null;
   return `${commute.minutes} min (${commute.distanceMiles.toFixed(1)} mi)${commute.approximate ? " ~" : ""}`;
+}
+
+function listingTimestamp(listing: MapListing): number {
+  return new Date(listing.postedAt ?? listing.firstSeenAt).getTime();
+}
+
+function opacityForListing(listing: MapListing, oldest: number, newest: number, minOpacity: number): number {
+  if (newest === oldest) return 1;
+  const t = (listingTimestamp(listing) - oldest) / (newest - oldest);
+  return minOpacity + t * (1 - minOpacity);
+}
+
+function formatListingAge(listing: MapListing): string {
+  const diffMs = Date.now() - listingTimestamp(listing);
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (diffDays <= 0) return "today";
+  if (diffDays === 1) return "1 day ago";
+  return `${diffDays} days ago`;
 }
 
 export type MapStation = { name: string; lines: TransitLine[]; latitude: number; longitude: number };
@@ -58,12 +78,17 @@ function RecenterOnCityChange({ center, zoom }: { center: [number, number]; zoom
 // Deliberately saturated, high-contrast colors — the CARTO Positron basemap
 // is intentionally pale/low-contrast (that's what makes it "basic"), so
 // markers need real brand-saturated colors to still read clearly against it.
-const markerIcon = L.divIcon({
-  className: "",
-  html: '<div style="width:14px;height:14px;border-radius:9999px;background:#dc2626;border:2px solid white;box-shadow:0 0 0 1px rgba(0,0,0,0.4)"></div>',
-  iconSize: [14, 14],
-  iconAnchor: [7, 7],
-});
+// Opacity fades toward a floor (never fully transparent/unclickable) for
+// older listings, so the newest ones visually pop out on a crowded map.
+const MARKER_MIN_OPACITY = 0.25;
+function listingMarkerIcon(opacity: number): L.DivIcon {
+  return L.divIcon({
+    className: "",
+    html: `<div style="width:14px;height:14px;border-radius:9999px;background:#dc2626;border:2px solid white;box-shadow:0 0 0 1px rgba(0,0,0,0.4);opacity:${opacity}"></div>`,
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+  });
+}
 
 // Each line gets an equal wedge of a conic-gradient "pie", using that line's
 // own official color. Deliberately smaller, no white outline, and partly
@@ -109,6 +134,14 @@ export function MapView({
   workLocation?: { latitude: number; longitude: number } | null;
 }) {
   const center = useMemo(() => CITY_CENTERS[city] ?? CITY_CENTERS.newyork, [city]);
+
+  // Older listings fade toward MARKER_MIN_OPACITY, scaled to the oldest/newest
+  // currently on screen (not a fixed absolute age) — a listing that's "old"
+  // in a search returning mostly today's posts should still stand out as
+  // relatively old, even if it's only a few days old in absolute terms.
+  const listingAges = listings.map(listingTimestamp);
+  const oldestTimestamp = listingAges.length > 0 ? Math.min(...listingAges) : 0;
+  const newestTimestamp = listingAges.length > 0 ? Math.max(...listingAges) : 0;
 
   const highlightCollection = useMemo<FeatureCollection>(
     () => ({
@@ -166,7 +199,11 @@ export function MapView({
         </Marker>
       )}
       {listings.map((listing) => (
-        <Marker key={listing.id} position={[listing.latitude, listing.longitude]} icon={markerIcon}>
+        <Marker
+          key={listing.id}
+          position={[listing.latitude, listing.longitude]}
+          icon={listingMarkerIcon(opacityForListing(listing, oldestTimestamp, newestTimestamp, MARKER_MIN_OPACITY))}
+        >
           <Popup>
             <div className="flex flex-col gap-1 max-w-52">
               <a href={listing.url} target="_blank" rel="noreferrer" className="font-medium">
@@ -177,6 +214,7 @@ export function MapView({
                 {listing.bedrooms != null ? ` · ${listing.bedrooms}bd` : ""}
                 {listing.bathrooms != null ? ` / ${listing.bathrooms}ba` : ""}
               </div>
+              <div className="text-xs text-black/50">Listed {formatListingAge(listing)}</div>
               {listing.boundaryNeighborhood && (
                 <div className="text-xs text-black/60">
                   {listing.locationText && !listing.locationText.toLowerCase().includes(listing.boundaryNeighborhood.toLowerCase())

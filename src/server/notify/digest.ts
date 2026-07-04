@@ -1,6 +1,7 @@
 import { prisma } from "@/server/db/prisma";
 import { emailChannel } from "./email";
 import type { NotificationListingPayload } from "./types";
+import { buildPauseUrl } from "@/lib/pauseToken";
 
 async function flushDigest(frequency: "HOURLY" | "DAILY") {
   const settings = await prisma.settings.findUnique({ where: { id: "singleton" } });
@@ -46,6 +47,7 @@ async function flushDigest(frequency: "HOURLY" | "DAILY") {
         subject: `[santi's list] ${listings.length} new listing${listings.length > 1 ? "s" : ""} for "${watch.name}" (${frequency.toLowerCase()} digest)`,
         watchName: watch.name,
         listings,
+        pauseUrl: buildPauseUrl(watch.id) ?? undefined,
       });
 
       await prisma.$transaction([

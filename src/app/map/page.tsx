@@ -28,9 +28,14 @@ export default function MapPage() {
   const [listings, setListings] = useState<MapListing[]>([]);
   const [stations, setStations] = useState<MapStation[]>([]);
   const [boundaries, setBoundaries] = useState<MapBoundary[]>([]);
-  const [showStations, setShowStations] = useState(true);
+  // Hidden by default for LA — its Metro rail network is sparse enough
+  // relative to the city's sprawl that the dots are more clutter than signal
+  // there, unlike NYC/SF where they're a much more universally useful layer.
+  const [showStations, setShowStations] = useState(VISIBLE_CITIES[0].value !== "losangeles");
   const [loading, setLoading] = useState(true);
   const [workLocation, setWorkLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [notPlotted, setNotPlotted] = useState(0);
+  const [totalRegardlessOfLocation, setTotalRegardlessOfLocation] = useState(0);
 
   useEffect(() => {
     fetch("/api/settings", { cache: "no-store" })
@@ -101,7 +106,10 @@ export default function MapPage() {
     setScope(next);
     if (next !== ALL_WATCHES_SCOPE && next !== "") {
       const watch = watches.find((w) => w.id === next);
-      if (watch) setCity(watch.city);
+      if (watch) {
+        setCity(watch.city);
+        setShowStations(watch.city !== "losangeles");
+      }
     }
   }
 
@@ -125,6 +133,8 @@ export default function MapPage() {
       const body = await res.json();
       if (!cancelled) {
         setListings(body.listings ?? []);
+        setNotPlotted(body.notPlotted ?? 0);
+        setTotalRegardlessOfLocation(body.totalRegardlessOfLocation ?? 0);
         setLoading(false);
       }
     }
@@ -143,6 +153,12 @@ export default function MapPage() {
           Listings plotted by their Craigslist-provided location, with distance to the nearest transit
           station.
         </p>
+        {!loading && notPlotted > 0 && (
+          <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+            {notPlotted} out of {totalRegardlessOfLocation} crawled listings are not plotted because no
+            location was provided.
+          </p>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-3 border border-black/10 dark:border-white/15 rounded-lg p-4">
@@ -167,7 +183,10 @@ export default function MapPage() {
           <select
             className="border rounded px-2 py-1 text-sm border-black/15 dark:border-white/20 bg-transparent"
             value={city}
-            onChange={(e) => setCity(e.target.value)}
+            onChange={(e) => {
+              setCity(e.target.value);
+              setShowStations(e.target.value !== "losangeles");
+            }}
           >
             {VISIBLE_CITIES.map((c) => (
               <option key={c.value} value={c.value}>

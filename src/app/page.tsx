@@ -128,6 +128,10 @@ function ListingsFeedPage() {
     defaultCommuteModeForCity(emptyFilters.city),
   );
   const [hasWorkAddress, setHasWorkAddress] = useState(false);
+  // LA's train-line filter starts collapsed by default — LA Metro rail is
+  // sparse enough relative to the city's size that it's a much less
+  // universally-relevant filter there than in NYC/SF.
+  const [trainLinesExpanded, setTrainLinesExpanded] = useState(emptyFilters.city !== "losangeles");
   const [loading, setLoading] = useState(true);
 
   const [watches, setWatches] = useState<WatchSummary[]>([]);
@@ -299,6 +303,7 @@ function ListingsFeedPage() {
       if (watch) {
         setFilters((prev) => ({ ...prev, city: watch.city, trainLines: "" }));
         setCommuteMode(defaultCommuteModeForCity(watch.city));
+        setTrainLinesExpanded(watch.city !== "losangeles");
       }
     }
   }
@@ -365,6 +370,7 @@ function ListingsFeedPage() {
             onChange={(e) => {
               updateFilter("city", e.target.value);
               if (e.target.value) setCommuteMode(defaultCommuteModeForCity(e.target.value));
+              setTrainLinesExpanded(e.target.value !== "losangeles");
             }}
           >
             <option value="">All cities</option>
@@ -469,30 +475,44 @@ function ListingsFeedPage() {
 
       {filters.city && (
         <div className="flex flex-col gap-1.5 border border-black/10 dark:border-white/15 rounded-lg p-4">
-          <span className="text-xs">Train lines (select any number — matches listings near any of them)</span>
-          <div className="flex flex-wrap gap-2">
-            {trainLines.length === 0 && (
-              <span className="text-xs text-black/40 dark:text-white/40">Loading lines for this city…</span>
+          <button
+            type="button"
+            onClick={() => setTrainLinesExpanded((prev) => !prev)}
+            className="text-xs text-left flex items-center gap-1"
+          >
+            <span aria-hidden>{trainLinesExpanded ? "▾" : "▸"}</span>
+            Train lines (select any number — matches listings near any of them)
+            {!trainLinesExpanded && filters.trainLines && (
+              <span className="text-black/50 dark:text-white/50">
+                ({filters.trainLines.split(",").filter(Boolean).length} selected)
+              </span>
             )}
-            {trainLines.map((line) => {
-              const selected = filters.trainLines.split(",").includes(line.name);
-              return (
-                <button
-                  key={line.name}
-                  type="button"
-                  onClick={() => toggleTrainLine(line.name)}
-                  className="flex items-center gap-1"
-                  title={line.name}
-                >
-                  <span
-                    className={`inline-flex w-5 h-5 rounded-full ${selected ? "ring-2 ring-offset-1 ring-black dark:ring-white ring-offset-transparent" : "opacity-40"}`}
+          </button>
+          {trainLinesExpanded && (
+            <div className="flex flex-wrap gap-2">
+              {trainLines.length === 0 && (
+                <span className="text-xs text-black/40 dark:text-white/40">Loading lines for this city…</span>
+              )}
+              {trainLines.map((line) => {
+                const selected = filters.trainLines.split(",").includes(line.name);
+                return (
+                  <button
+                    key={line.name}
+                    type="button"
+                    onClick={() => toggleTrainLine(line.name)}
+                    className="flex items-center gap-1"
+                    title={line.name}
                   >
-                    <TrainLineBadge line={line} />
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+                    <span
+                      className={`inline-flex w-5 h-5 rounded-full ${selected ? "ring-2 ring-offset-1 ring-black dark:ring-white ring-offset-transparent" : "opacity-40"}`}
+                    >
+                      <TrainLineBadge line={line} />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 

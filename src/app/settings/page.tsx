@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ClearCacheButton } from "./ClearCacheButton";
+import { applyTheme, getStoredTheme, type Theme } from "@/lib/theme";
 
 type Settings = {
   alertEmail: string | null;
@@ -23,6 +24,22 @@ export default function SettingsPage() {
   const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
   const [addressDirty, setAddressDirty] = useState(false);
   const [confirmedAddress, setConfirmedAddress] = useState<AddressSuggestion | null>(null);
+  // Starts as "auto" to match the server-rendered markup exactly (no access
+  // to localStorage during SSR) — corrected right after mount, before the
+  // user could plausibly interact with it.
+  const [theme, setTheme] = useState<Theme>("auto");
+
+  useEffect(() => {
+    // Reading localStorage (an external system unavailable during SSR) is
+    // exactly the documented exception to "don't setState in an effect".
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTheme(getStoredTheme());
+  }, []);
+
+  function handleThemeChange(next: Theme) {
+    setTheme(next);
+    applyTheme(next);
+  }
 
   useEffect(() => {
     fetch("/api/settings", { cache: "no-store" })
@@ -175,6 +192,27 @@ export default function SettingsPage() {
           {saving ? "Saving…" : "Save settings"}
         </button>
       </form>
+
+      <div className="border border-black/10 dark:border-white/15 rounded-lg p-4 flex flex-col gap-2">
+        <span className="text-sm">Theme</span>
+        <div className="flex gap-2">
+          {(["light", "dark", "auto"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => handleThemeChange(option)}
+              className={`px-3 py-1.5 rounded text-sm border ${
+                theme === option
+                  ? "bg-foreground text-background border-foreground"
+                  : "border-black/15 dark:border-white/20"
+              }`}
+            >
+              {option === "auto" ? "Follow system" : option === "light" ? "Light" : "Dark"}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-black/50 dark:text-white/50">Applies immediately, saved to this browser.</p>
+      </div>
 
       <details className="border border-black/10 dark:border-white/15 rounded-lg px-4 py-3">
         <summary className="text-sm cursor-pointer select-none text-black/60 dark:text-white/60">

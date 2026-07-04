@@ -18,13 +18,20 @@ function renderHtml(payload: NotificationPayload): string {
     })
     .join("");
 
-  return `<p>New listings for <strong>${payload.watchName}</strong>:</p><ul>${rows}</ul>`;
+  const pauseLine = payload.pauseUrl
+    ? `<p style="color:#999;font-size:12px">Getting too many of these? <a href="${payload.pauseUrl}">Pause this search</a>.</p>`
+    : "";
+
+  return `<p>New listings for <strong>${payload.watchName}</strong>:</p><ul>${rows}</ul>${pauseLine}`;
 }
 
 function renderText(payload: NotificationPayload): string {
-  return payload.listings
+  const listingsText = payload.listings
     .map((l) => `${l.title} — ${l.price != null ? `$${l.price}` : "?"}\n${l.url}`)
     .join("\n\n");
+
+  const pauseLine = payload.pauseUrl ? `\n\nGetting too many of these? Pause this search: ${payload.pauseUrl}` : "";
+  return listingsText + pauseLine;
 }
 
 function buildEmailChannel(): NotificationChannel {

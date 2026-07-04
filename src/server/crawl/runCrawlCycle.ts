@@ -2,6 +2,7 @@ import { prisma } from "@/server/db/prisma";
 import type { Listing, Watch } from "@/generated/prisma/client";
 import { emailChannel } from "@/server/notify/email";
 import type { NotificationListingPayload } from "@/server/notify/types";
+import { buildPauseUrl } from "@/lib/pauseToken";
 import { getNeighborhoodForPoint } from "@/server/geo/neighborhoodBoundaries";
 import { craigslistSource } from "./sources/craigslist";
 import type { ListingSource, RawListing } from "./sources/types";
@@ -245,6 +246,7 @@ async function processWatch(watch: Watch, summary: CrawlCycleSummary, searchCach
         subject: `[santi's list] ${immediateMatches.length} new listing${immediateMatches.length > 1 ? "s" : ""} for "${watch.name}"`,
         watchName: watch.name,
         listings: immediateMatches,
+        pauseUrl: buildPauseUrl(watch.id) ?? undefined,
       });
 
       await prisma.notification.update({
