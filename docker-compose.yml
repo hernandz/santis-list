@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: craigslist_watch
+      POSTGRES_PASSWORD: craigslist_watch
+      POSTGRES_DB: craigslist_watch
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U craigslist_watch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://craigslist_watch:craigslist_watch@db:5432/craigslist_watch?schema=public
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      SMTP_URL: ${SMTP_URL:-}
+      EMAIL_FROM: ${EMAIL_FROM:-alerts@example.com}
+      NOTIFY_TO_EMAIL: ${NOTIFY_TO_EMAIL:-}
+      CRAWL_INTERVAL_MINUTES: ${CRAWL_INTERVAL_MINUTES:-20}
+      DIGEST_DAILY_HOUR: ${DIGEST_DAILY_HOUR:-8}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "3000:3000"
+
+volumes:
+  db_data:

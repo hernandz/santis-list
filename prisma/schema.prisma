@@ -1,0 +1,136 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ListingSourceType {
+  CRAIGSLIST
+}
+
+enum NotifyFrequency {
+  IMMEDIATE
+  HOURLY
+  DAILY
+}
+
+enum NotificationChannelType {
+  EMAIL
+  SMS
+}
+
+enum NotificationType {
+  IMMEDIATE
+  DIGEST_HOURLY
+  DIGEST_DAILY
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model Watch {
+  id                  String           @id @default(cuid())
+  name                String
+  city                String
+  // Craigslist's own sub-area codes (e.g. "brk" for Brooklyn) — scoping the
+  // crawl to these narrows Craigslist's own recency-capped result window
+  // instead of searching the whole (often huge) metro. Purely a crawl-scope
+  // optimization; neighborhoods below are the actual match filter.
+  subareas            String[]         @default([])
+  neighborhoods       String[]         @default([])
+  minPrice            Int?
+  maxPrice            Int?
+  minBedrooms         Int?
+  minBathrooms        Int?
+  notifyFrequency     NotifyFrequency  @default(IMMEDIATE)
+  isActive            Boolean          @default(true)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  matches       WatchMatch[]
+  notifications Notification[]
+}
+
+model Listing {
+  id           String            @id @default(cuid())
+  source       ListingSourceType @default(CRAIGSLIST)
+  externalId   String
+  url          String
+  title        String
+  price        Int?
+  bedrooms     Int?
+  bathrooms    Float?
+  locationText String?
+  address      String?
+  latitude     Float?
+  longitude    Float?
+  city         String
+  postedAt     DateTime?
+  firstSeenAt  DateTime          @default(now())
+  rawData      Json?
+
+  matches              WatchMatch[]
+  notificationListings NotificationListing[]
+
+  @@unique([source, externalId])
+  @@index([city])
+  @@index([firstSeenAt])
+}
+
+model WatchMatch {
+  id         String   @id @default(cuid())
+  watchId    String
+  listingId  String
+  matchedAt  DateTime @default(now())
+  notified   Boolean  @default(false)
+
+  watch   Watch   @relation(fields: [watchId], references: [id], onDelete: Cascade)
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@unique([watchId, listingId])
+}
+
+model Notification {
+  id           String                  @id @default(cuid())
+  watchId      String
+  channel      NotificationChannelType @default(EMAIL)
+  type         NotificationType
+  status       NotificationStatus      @default(PENDING)
+  sentAt       DateTime?
+  errorMessage String?
+  createdAt    DateTime                @default(now())
+
+  watch    Watch                  @relation(fields: [watchId], references: [id], onDelete: Cascade)
+  listings NotificationListing[]
+}
+
+// Singleton row (id is always "singleton") — one set of personal preferences
+// for the whole app, not per-watch.
+model Settings {
+  id            String   @id @default("singleton")
+  alertEmail    String?
+  workAddress   String?
+  workLatitude  Float?
+  workLongitude Float?
+  updatedAt     DateTime @updatedAt
+}
+
+model NotificationListing {
+  id             String   @id @default(cuid())
+  notificationId String
+  listingId      String
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  listing      Listing       @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, listingId])
+}

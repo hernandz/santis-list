@@ -1,0 +1,55 @@
+{
+  "name": "craigslist-watch",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "seed": "tsx scripts/seed.ts",
+    "crawl:once": "tsx scripts/crawl-once.ts",
+    "digests:once": "tsx scripts/flush-digests-once.ts",
+    "backfill:geo": "tsx scripts/backfill-geo.ts"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.8.0",
+    "@prisma/client": "^7.8.0",
+    "cheerio": "^1.2.0",
+    "leaflet": "^1.9.4",
+    "next": "16.2.10",
+    "node-cron": "^4.5.0",
+    "nodemailer": "^9.0.3",
+    "pg": "^8.22.0",
+    "prisma": "^7.8.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-leaflet": "^5.0.0",
+    "resend": "^6.17.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/leaflet": "^1.9.21",
+    "@types/node": "^20",
+    "@types/node-cron": "^3.0.11",
+    "@types/nodemailer": "^8.0.1",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "dotenv": "^17.4.2",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.10",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.0",
+    "typescript": "^5"
+  },
+  "allowScripts": {
+    "@prisma/engines@7.8.0": true,
+    "esbuild@0.28.1": true,
+    "prisma@7.8.0": true,
+    "sharp@0.34.5": true,
+    "unrs-resolver@1.12.2": true,
+    "fsevents@2.3.3": true
+  }
+}
