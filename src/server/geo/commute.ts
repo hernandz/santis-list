@@ -7,18 +7,26 @@ export type CommuteEstimate = { minutes: number; distanceMiles: number; approxim
 
 type Point = { latitude: number; longitude: number };
 
-// OSRM's free public demo routing server — real road-network driving routes,
-// no API key. Not guaranteed for production volume, but fine for a personal,
-// low-frequency tool. The table service computes one point (the work address)
-// against many sources in a single request, instead of one request per listing.
-export async function getCarCommutesBatch(from: Point[], to: Point): Promise<(CommuteEstimate | null)[]> {
+// Free public OSRM routing servers, no API key. Not guaranteed for production
+// volume, but fine for a personal, low-frequency tool. The table service
+// computes one point (the work address) against many sources in a single
+// request, instead of one request per listing.
+//
+// Verified live 2026-07: router.project-osrm.org (the official demo) only
+// actually hosts a driving-network graph — requesting its "/bike/" path
+// silently returns identical results to "/driving/" rather than erroring, so
+// it can't be used for real bike routing. routing.openstreetmap.de (a
+// separate community-run demo) hosts genuinely distinct profile instances
+// (routed-car, routed-bike) confirmed to give different routes/durations for
+// the same two points.
+async function getOsrmCommutesBatch(baseUrl: string, from: Point[], to: Point): Promise<(CommuteEstimate | null)[]> {
   if (from.length === 0) return [];
 
   const coords = [...from.map((p) => `${p.longitude},${p.latitude}`), `${to.longitude},${to.latitude}`].join(";");
   const destinationIndex = from.length;
   const sources = from.map((_, i) => i).join(";");
 
-  const url = `https://router.project-osrm.org/table/v1/driving/${coords}?sources=${sources}&destinations=${destinationIndex}&annotations=duration,distance`;
+  const url = `${baseUrl}/table/v1/driving/${coords}?sources=${sources}&destinations=${destinationIndex}&annotations=duration,distance`;
 
   try {
     const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
@@ -36,6 +44,14 @@ export async function getCarCommutesBatch(from: Point[], to: Point): Promise<(Co
   } catch {
     return from.map(() => null);
   }
+}
+
+export function getCarCommutesBatch(from: Point[], to: Point): Promise<(CommuteEstimate | null)[]> {
+  return getOsrmCommutesBatch("https://router.project-osrm.org", from, to);
+}
+
+export function getBikeCommutesBatch(from: Point[], to: Point): Promise<(CommuteEstimate | null)[]> {
+  return getOsrmCommutesBatch("https://routing.openstreetmap.de/routed-bike", from, to);
 }
 
 const AVERAGE_TRANSIT_SPEED_MPH = 17; // rough rapid-transit average including stops

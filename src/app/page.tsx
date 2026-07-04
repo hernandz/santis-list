@@ -53,6 +53,10 @@ function defaultCommuteModeForCity(city: string): "car" | "transit" {
   return city === "losangeles" ? "car" : "transit";
 }
 
+function commuteModeEmoji(mode: "" | "car" | "bike" | "transit"): string {
+  return mode === "car" ? "🚗" : mode === "bike" ? "🚲" : "🚆";
+}
+
 type WatchSummary = { id: string; name: string; city: string };
 
 // The "saved search scope" (all watches / a specific watch / none) is a
@@ -119,7 +123,9 @@ function ListingsFeedPage() {
   const [filters, setFilters] = useState(emptyFilters);
   const [page, setPage] = useState(1);
   const [data, setData] = useState<ListingsResponse | null>(null);
-  const [commuteMode, setCommuteMode] = useState<"" | "car" | "transit">(defaultCommuteModeForCity(emptyFilters.city));
+  const [commuteMode, setCommuteMode] = useState<"" | "car" | "bike" | "transit">(
+    defaultCommuteModeForCity(emptyFilters.city),
+  );
   const [hasWorkAddress, setHasWorkAddress] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -428,6 +434,7 @@ function ListingsFeedPage() {
           >
             <option value="">Off</option>
             <option value="car">By car</option>
+            <option value="bike">By bike</option>
             <option value="transit">By transit (estimate)</option>
           </select>
           {commuteMode && !hasWorkAddress && (
@@ -515,7 +522,7 @@ function ListingsFeedPage() {
               onClick={() => handleHeaderSort("commute")}
               className="text-right hover:text-black dark:hover:text-white"
             >
-              Commute {commuteMode === "car" ? "🚗" : "🚆"}
+              Commute {commuteModeEmoji(commuteMode)}
               {sortIndicator(filters.sort === "commute")}
             </button>
           )}

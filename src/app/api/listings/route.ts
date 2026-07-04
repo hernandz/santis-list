@@ -3,7 +3,13 @@ import { prisma } from "@/server/db/prisma";
 import type { Listing, Prisma } from "@/generated/prisma/client";
 import { getNearestStations, type NearestStation } from "@/server/geo/transitStations";
 import { getNeighborhoodForPoint } from "@/server/geo/neighborhoodBoundaries";
-import { getCarCommutesBatch, getTransitCommute, usesGoogleTransit, type CommuteEstimate } from "@/server/geo/commute";
+import {
+  getCarCommutesBatch,
+  getBikeCommutesBatch,
+  getTransitCommute,
+  usesGoogleTransit,
+  type CommuteEstimate,
+} from "@/server/geo/commute";
 
 export const dynamic = "force-dynamic";
 
@@ -133,17 +139,19 @@ async function enrichListing<T extends Listing>(
 }
 
 // Only computed for the current page of results (never the whole candidate
-// pool) — car commutes cost one batched external routing request per page,
-// and there's no reason to spend that on rows the user isn't looking at.
+// pool) — car/bike commutes each cost one batched external routing request
+// per page, and there's no reason to spend that on rows the user isn't
+// looking at.
 async function attachCommute<T extends Listing>(
   listings: T[],
-  mode: "car" | "transit",
+  mode: "car" | "bike" | "transit",
   work: { latitude: number; longitude: number },
 ): Promise<(T & { commute: CommuteEstimate | null })[]> {
   const withGeo = listings.filter((l) => l.latitude != null && l.longitude != null);
 
-  if (mode === "car") {
-    const commutes = await getCarCommutesBatch(
+  if (mode === "car" || mode === "bike") {
+    const batchFn = mode === "car" ? getCarCommutesBatch : getBikeCommutesBatch;
+    const commutes = await batchFn(
       withGeo.map((l) => ({ latitude: l.latitude!, longitude: l.longitude! })),
       work,
     );
@@ -163,22 +171,30 @@ async function attachCommute<T extends Listing>(
   return listings.map((l) => ({ ...l, commute: byId.get(l.id) ?? null }));
 }
 
-// Used by the map view, which shows both figures per listing at once rather
-// than letting the user pick one mode. Car needs one batched OSRM request, so
-// it's capped (see COMMUTE_EXTERNAL_API_CAP) — a map of ~500 pins is more
-// than that request is meant for. Transit is capped the same way only when
-// it's a real per-listing Google lookup, not the free in-process heuristic.
-async function attachBothCommutes<T extends Listing>(
+// Used by the map view, which shows every mode per listing at once rather
+// than letting the user pick one. Car/bike each need one batched OSRM
+// request, so each is capped (see COMMUTE_EXTERNAL_API_CAP) — a map of ~500
+// pins is more than either request is meant for. Transit is capped the same
+// way only when it's a real per-listing Google lookup, not the free
+// in-process heuristic.
+async function attachAllCommutes<T extends Listing>(
   listings: T[],
   work: { latitude: number; longitude: number },
-): Promise<(T & { commuteCar: CommuteEstimate | null; commuteTransit: CommuteEstimate | null })[]> {
+): Promise<
+  (T & { commuteCar: CommuteEstimate | null; commuteBike: CommuteEstimate | null; commuteTransit: CommuteEstimate | null })[]
+> {
   const withGeo = listings.filter((l) => l.latitude != null && l.longitude != null);
   const carBatch = withGeo.slice(0, COMMUTE_EXTERNAL_API_CAP);
+  const bikeBatch = withGeo.slice(0, COMMUTE_EXTERNAL_API_CAP);
   const transitBatch = usesGoogleTransit() ? withGeo.slice(0, COMMUTE_EXTERNAL_API_CAP) : withGeo;
 
-  const [carCommutes, transitCommutes] = await Promise.all([
+  const [carCommutes, bikeCommutes, transitCommutes] = await Promise.all([
     getCarCommutesBatch(
       carBatch.map((l) => ({ latitude: l.latitude!, longitude: l.longitude! })),
+      work,
+    ),
+    getBikeCommutesBatch(
+      bikeBatch.map((l) => ({ latitude: l.latitude!, longitude: l.longitude! })),
       work,
     ),
     Promise.all(
@@ -187,21 +203,23 @@ async function attachBothCommutes<T extends Listing>(
   ]);
 
   const carById = new Map(carBatch.map((l, i) => [l.id, carCommutes[i]]));
+  const bikeById = new Map(bikeBatch.map((l, i) => [l.id, bikeCommutes[i]]));
   const transitById = new Map(transitBatch.map((l, i) => [l.id, transitCommutes[i]]));
 
   return listings.map((l) => ({
     ...l,
     commuteCar: carById.get(l.id) ?? null,
+    commuteBike: bikeById.get(l.id) ?? null,
     commuteTransit: transitById.get(l.id) ?? null,
   }));
 }
 
 async function attachCommuteAny<T extends Listing>(
   listings: T[],
-  mode: "car" | "transit" | "both",
+  mode: "car" | "bike" | "transit" | "both",
   work: { latitude: number; longitude: number },
 ) {
-  return mode === "both" ? attachBothCommutes(listings, work) : attachCommute(listings, mode, work);
+  return mode === "both" ? attachAllCommutes(listings, work) : attachCommute(listings, mode, work);
 }
 
 function comparePrice(a: Listing, b: Listing, direction: "asc" | "desc"): number {
@@ -245,7 +263,10 @@ export async function GET(request: Request) {
   const watchId = searchParams.get("watchId") || undefined;
   const commuteModeParam = searchParams.get("commuteMode");
   const commuteMode =
-    commuteModeParam === "car" || commuteModeParam === "transit" || commuteModeParam === "both"
+    commuteModeParam === "car" ||
+    commuteModeParam === "bike" ||
+    commuteModeParam === "transit" ||
+    commuteModeParam === "both"
       ? commuteModeParam
       : null;
   const workSettings = commuteMode ? await prisma.settings.findUnique({ where: { id: "singleton" } }) : null;
@@ -299,7 +320,9 @@ export async function GET(request: Request) {
 
   const scopeHasNeighborhoods = scopeWatches?.some((w) => w.neighborhoods.length > 0) ?? false;
   const sortingByCommute =
-    sort === "commute" && (commuteMode === "car" || commuteMode === "transit") && work != null;
+    sort === "commute" &&
+    (commuteMode === "car" || commuteMode === "bike" || commuteMode === "transit") &&
+    work != null;
   const needsEnrichedFilter =
     sort === "distance_to_train" ||
     maxWalkMinutes != null ||
@@ -351,7 +374,8 @@ export async function GET(request: Request) {
   // enrich all of them with live nearestStation data, then apply the walk-time
   // filter/sort and paginate in memory.
   const usesExternalCommuteApi =
-    sortingByCommute && (commuteMode === "car" || (commuteMode === "transit" && usesGoogleTransit()));
+    sortingByCommute &&
+    (commuteMode === "car" || commuteMode === "bike" || (commuteMode === "transit" && usesGoogleTransit()));
   const candidateCap = usesExternalCommuteApi ? COMMUTE_EXTERNAL_API_CAP : TRANSIT_SORT_CAP;
   const [whereTotal, candidates] = await Promise.all([
     prisma.listing.count({ where }),

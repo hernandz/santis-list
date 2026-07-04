@@ -25,6 +25,7 @@ export type MapListing = {
   nearestStation: NearestStationInfo | null;
   nextStation: NearestStationInfo | null;
   commuteCar?: CommuteInfo | null;
+  commuteBike?: CommuteInfo | null;
   commuteTransit?: CommuteInfo | null;
 };
 
@@ -205,6 +206,9 @@ export function MapView({
               )}
               {formatCommuteInfo(listing.commuteTransit) && (
                 <div className="text-xs text-black/60">🚆 {formatCommuteInfo(listing.commuteTransit)} to work</div>
+              )}
+              {formatCommuteInfo(listing.commuteBike) && (
+                <div className="text-xs text-black/60">🚲 {formatCommuteInfo(listing.commuteBike)} to work</div>
               )}
               {formatCommuteInfo(listing.commuteCar) && (
                 <div className="text-xs text-black/60">🚗 {formatCommuteInfo(listing.commuteCar)} to work</div>
