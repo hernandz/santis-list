@@ -26,6 +26,23 @@ Crawls Craigslist for new apartment listings matching your saved searches (city,
    ```
    Open http://localhost:3000. The crawler + digest scheduler start automatically in-process (see `src/instrumentation.ts` / `src/server/scheduler.ts`).
 
+### Starting/stopping the dev server
+
+From the project root (`/Users/santos/dev/santis-list`):
+
+```bash
+# start it in the foreground (Ctrl+C to stop)
+npm run dev
+
+# or start it in the background, logging to a file
+nohup npm run dev > /tmp/santislist-dev.log 2>&1 &
+
+# stop a background instance
+pkill -f "next dev"
+```
+
+If it ever hangs or crashes, `pkill -f "next dev"` then re-run `npm run dev` — Turbopack's dev cache lives in `.next/`, so deleting that directory (`rm -rf .next`) first can help if it's stuck on a corrupted cache.
+
 ### Useful scripts
 
 - `npm run crawl:once` — run one crawl cycle immediately (useful for testing a new saved search without waiting for the schedule).

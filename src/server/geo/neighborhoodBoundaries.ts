@@ -1,4 +1,5 @@
 import { pointInGeometry, type GeoJsonGeometry } from "./pointInPolygon";
+import { readDiskCache, readDiskCacheStale, writeDiskCache, clearDiskCache } from "@/server/diskCache";
 
 // region is a coarser grouping the boundary dataset happens to carry (NYC's
 // NTA dataset includes a borough per neighborhood) — used only to pare down
@@ -38,13 +39,53 @@ async function fetchSfNeighborhoods(): Promise<Boundary[]> {
   return body.features.map((f) => ({ name: String(f.properties.nhood), geometry: f.geometry, region: null }));
 }
 
-async function fetchLaNeighborhoods(): Promise<Boundary[]> {
+// LA City's own neighborhood layer (finer-grained within LA proper — e.g. it
+// has "Sawtelle" as its own polygon, which the countywide layer below folds
+// into the larger "West Los Angeles").
+async function fetchLaCityNeighborhoods(): Promise<Boundary[]> {
   const res = await fetch("https://geohub.lacity.org/datasets/d6c55385a0e749519f238b77135eafac_0.geojson", {
     headers: { "User-Agent": USER_AGENT },
   });
-  if (!res.ok) throw new Error(`Failed to fetch LA neighborhood boundaries: ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to fetch LA city neighborhood boundaries: ${res.status}`);
   const body: GeoJsonFeatureCollection = await res.json();
   return body.features.map((f) => ({ name: String(f.properties.name), geometry: f.geometry, region: null }));
+}
+
+// LA County's official "Cities and Communities (Statistical Areas)" layer —
+// covers the whole county, so unlike the LA-city-only layer above, it
+// includes every independent city Craigslist's LA metro spans (Santa Monica,
+// Beverly Hills, Culver City, Long Beach, Pasadena, etc.) plus unincorporated
+// communities. Verified live 2026-07-03: 373 features, outSR=4326 gives plain
+// lat/lon (the service's default CRS is a feet-based state-plane projection).
+async function fetchLaCountyNeighborhoods(): Promise<Boundary[]> {
+  const url =
+    "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Political_Boundaries/MapServer/23/query" +
+    "?where=1%3D1&outFields=COMMUNITY,LCITY&outSR=4326&f=geojson&resultRecordCount=1000";
+  const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+  if (!res.ok) throw new Error(`Failed to fetch LA County neighborhood boundaries: ${res.status}`);
+  const body: GeoJsonFeatureCollection = await res.json();
+  return body.features
+    .filter((f) => String(f.properties.LCITY ?? "").trim() !== "Los Angeles") // covered by the finer-grained layer above
+    .map((f) => {
+      // A blank COMMUNITY means this row is a whole city with no further
+      // breakdown (e.g. plain "Santa Monica") — fall back to the city name.
+      const community = String(f.properties.COMMUNITY ?? "").trim();
+      const city = String(f.properties.LCITY ?? "").trim();
+      return { name: community || city, geometry: f.geometry, region: null };
+    });
+}
+
+// Merges LA city's finer internal neighborhoods with the rest of the county's
+// cities/communities — the two datasets don't geometrically overlap (the
+// county layer's rows are filtered to exclude LA proper), so combining them
+// just extends coverage outward, e.g. to add "Santa Monica" without losing
+// "Sawtelle".
+async function fetchLaNeighborhoods(): Promise<Boundary[]> {
+  const [cityNeighborhoods, countyNeighborhoods] = await Promise.all([
+    fetchLaCityNeighborhoods(),
+    fetchLaCountyNeighborhoods(),
+  ]);
+  return [...cityNeighborhoods, ...countyNeighborhoods];
 }
 
 const FETCHERS: Record<string, () => Promise<Boundary[]>> = {
@@ -55,8 +96,13 @@ const FETCHERS: Record<string, () => Promise<Boundary[]>> = {
 
 const cache = new Map<string, { fetchedAt: number; boundaries: Boundary[] }>();
 
+function diskCacheKey(city: string): string {
+  return `neighborhood-boundaries-${city}`;
+}
+
 export function clearNeighborhoodBoundariesCache(): void {
   cache.clear();
+  for (const city of Object.keys(FETCHERS)) clearDiskCache(diskCacheKey(city));
 }
 
 async function getBoundariesForCity(city: string): Promise<Boundary[]> {
@@ -65,16 +111,26 @@ async function getBoundariesForCity(city: string): Promise<Boundary[]> {
     return cached.boundaries;
   }
 
+  // Disk cache survives dev server restarts — in-memory alone means every
+  // restart re-fetches live, which is how these free public APIs' rate
+  // limits get tripped during a long dev session.
+  const onDisk = readDiskCache<Boundary[]>(diskCacheKey(city), BOUNDARIES_TTL_MS);
+  if (onDisk) {
+    cache.set(city, { fetchedAt: Date.now(), boundaries: onDisk });
+    return onDisk;
+  }
+
   const fetcher = FETCHERS[city];
   if (!fetcher) return [];
 
   try {
     const boundaries = await fetcher();
     cache.set(city, { fetchedAt: Date.now(), boundaries });
+    writeDiskCache(diskCacheKey(city), boundaries);
     return boundaries;
   } catch (err) {
     console.error(`Failed to fetch neighborhood boundaries for ${city}:`, err);
-    return cached?.boundaries ?? [];
+    return cached?.boundaries ?? readDiskCacheStale<Boundary[]>(diskCacheKey(city)) ?? [];
   }
 }
 

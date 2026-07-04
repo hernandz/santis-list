@@ -2,13 +2,14 @@
 
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
-import { MapContainer, TileLayer, Marker, Popup, GeoJSON } from "react-leaflet";
-import { useMemo } from "react";
+import { MapContainer, TileLayer, Marker, Popup, GeoJSON, useMap } from "react-leaflet";
+import { useEffect, useMemo } from "react";
 import type { Feature, FeatureCollection, Geometry } from "geojson";
 import type { PathOptions } from "leaflet";
 import { TrainLineBadge, type TransitLine } from "@/components/TrainLineBadge";
 
 type NearestStationInfo = { name: string; lines: TransitLine[]; distanceMiles: number; walkingMinutes: number };
+type CommuteInfo = { minutes: number; distanceMiles: number; approximate: boolean };
 
 export type MapListing = {
   id: string;
@@ -23,7 +24,14 @@ export type MapListing = {
   boundaryNeighborhood: string | null;
   nearestStation: NearestStationInfo | null;
   nextStation: NearestStationInfo | null;
+  commuteCar?: CommuteInfo | null;
+  commuteTransit?: CommuteInfo | null;
 };
+
+function formatCommuteInfo(commute: CommuteInfo | null | undefined): string | null {
+  if (!commute) return null;
+  return `${commute.minutes} min (${commute.distanceMiles.toFixed(1)} mi)${commute.approximate ? " ~" : ""}`;
+}
 
 export type MapStation = { name: string; lines: TransitLine[]; latitude: number; longitude: number };
 export type MapBoundary = { name: string; geometry: Geometry };
@@ -33,6 +41,18 @@ const CITY_CENTERS: Record<string, [number, number]> = {
   sfbay: [37.8, -122.27],
   losangeles: [34.05, -118.35],
 };
+
+// MapContainer's center/zoom props only apply on initial mount — react-leaflet
+// doesn't reactively re-center on prop changes, so switching city while the
+// map is already mounted needs an imperative setView via the map instance.
+function RecenterOnCityChange({ center, zoom }: { center: [number, number]; zoom: number }) {
+  const map = useMap();
+  useEffect(() => {
+    map.setView(center, zoom);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [center[0], center[1], zoom, map]);
+  return null;
+}
 
 // Deliberately saturated, high-contrast colors — the CARTO Positron basemap
 // is intentionally pale/low-contrast (that's what makes it "basic"), so
@@ -61,6 +81,15 @@ function stationIcon(lines: TransitLine[]): L.DivIcon {
   });
 }
 
+// A star, distinct from both the round listing markers and the small round
+// station dots — this is a single fixed point of interest, not one of many.
+const workIcon = L.divIcon({
+  className: "",
+  html: '<div style="font-size:22px;line-height:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.6))">⭐</div>',
+  iconSize: [22, 22],
+  iconAnchor: [11, 11],
+});
+
 export function MapView({
   listings,
   city,
@@ -68,6 +97,7 @@ export function MapView({
   boundaries = [],
   highlightNeighborhoods = [],
   showStations = true,
+  workLocation = null,
 }: {
   listings: MapListing[];
   city: string;
@@ -75,6 +105,7 @@ export function MapView({
   boundaries?: MapBoundary[];
   highlightNeighborhoods?: string[];
   showStations?: boolean;
+  workLocation?: { latitude: number; longitude: number } | null;
 }) {
   const center = useMemo(() => CITY_CENTERS[city] ?? CITY_CENTERS.newyork, [city]);
 
@@ -94,6 +125,7 @@ export function MapView({
 
   return (
     <MapContainer center={center} zoom={12} scrollWheelZoom className="h-[70vh] w-full rounded-lg z-0">
+      <RecenterOnCityChange center={center} zoom={12} />
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
         url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
@@ -127,6 +159,11 @@ export function MapView({
           </Popup>
         </Marker>
       ))}
+      {workLocation && (
+        <Marker position={[workLocation.latitude, workLocation.longitude]} icon={workIcon}>
+          <Popup>Your work address</Popup>
+        </Marker>
+      )}
       {listings.map((listing) => (
         <Marker key={listing.id} position={[listing.latitude, listing.longitude]} icon={markerIcon}>
           <Popup>
@@ -165,6 +202,12 @@ export function MapView({
                     <TrainLineBadge key={line.name} line={line} />
                   ))}
                 </div>
+              )}
+              {formatCommuteInfo(listing.commuteTransit) && (
+                <div className="text-xs text-black/60">🚆 {formatCommuteInfo(listing.commuteTransit)} to work</div>
+              )}
+              {formatCommuteInfo(listing.commuteCar) && (
+                <div className="text-xs text-black/60">🚗 {formatCommuteInfo(listing.commuteCar)} to work</div>
               )}
             </div>
           </Popup>

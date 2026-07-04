@@ -1,8 +1,9 @@
 "use client";
 
 import "leaflet/dist/leaflet.css";
-import { MapContainer, TileLayer, GeoJSON } from "react-leaflet";
-import { useMemo } from "react";
+import L from "leaflet";
+import { MapContainer, TileLayer, GeoJSON, Marker, Popup, useMap } from "react-leaflet";
+import { useEffect, useMemo, useState } from "react";
 import type { Feature, FeatureCollection, Geometry } from "geojson";
 import type { PathOptions } from "leaflet";
 
@@ -19,6 +20,18 @@ const CITY_CENTERS: Record<string, [number, number]> = {
 const TILE_URL = "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
 const TILE_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
+
+// MapContainer's center/zoom props only apply on initial mount — react-leaflet
+// doesn't reactively re-center on prop changes, so switching city while the
+// map is already mounted needs an imperative setView via the map instance.
+function RecenterOnCityChange({ center, zoom }: { center: [number, number]; zoom: number }) {
+  const map = useMap();
+  useEffect(() => {
+    map.setView(center, zoom);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [center[0], center[1], zoom, map]);
+  return null;
+}
 
 export function NeighborhoodMapPicker({
   city,
@@ -56,6 +69,7 @@ export function NeighborhoodMapPicker({
   return (
     <div className="h-[32rem] w-full rounded-lg overflow-hidden border border-black/10 dark:border-white/15">
       <MapContainer center={center} zoom={11} scrollWheelZoom={false} className="h-full w-full z-0">
+        <RecenterOnCityChange center={center} zoom={11} />
         <TileLayer attribution={TILE_ATTRIBUTION} url={TILE_URL} />
         {boundaries.length > 0 && (
           <GeoJSON

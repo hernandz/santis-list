@@ -81,14 +81,19 @@ function formatCommute(commute: Listing["commute"]): string {
   return `${commute.minutes} min (${distance} mi)${commute.approximate ? " ~" : ""}`;
 }
 
-// Red (worst/highest) → green (best/lowest) color scale, relative to the
+// Mid-range lightness so it reads against both light and dark backgrounds.
+function hueColor(hue: number): string {
+  return `hsl(${hue}, 80%, 45%)`;
+}
+const BEST_COLOR = hueColor(120); // green
+
+// Red (worst/highest) → green (best/lowest) text color, relative to the
 // min/max of whatever's currently on screen — not a fixed absolute scale,
 // since "a good price" means different things in different searches.
-function gradientBackground(value: number | null | undefined, min: number, max: number): React.CSSProperties {
+function gradientTextColor(value: number | null | undefined, min: number, max: number): React.CSSProperties {
   if (value == null || min === max) return {};
   const t = Math.min(1, Math.max(0, (value - min) / (max - min)));
-  const hue = (1 - t) * 120; // 120° = green, 0° = red
-  return { backgroundColor: `hsla(${hue}, 70%, 50%, 0.16)` };
+  return { color: hueColor((1 - t) * 120) }; // 120° = green, 0° = red
 }
 
 function numericRange(values: (number | null | undefined)[]): [number, number] {
@@ -537,14 +542,13 @@ function ListingsFeedPage() {
                     : ""}
                 </div>
               </div>
-              <div
-                className="flex flex-col gap-1 text-xs text-black/60 dark:text-white/60 rounded px-1.5 py-1 -mx-1.5"
-                style={gradientBackground(listing.nearestStation?.walkingMinutes, walkMin, walkMax)}
-              >
+              <div className="flex flex-col gap-1 text-xs text-black/60 dark:text-white/60">
                 {listing.nearestStation ? (
                   <>
                     <div className="flex items-center gap-1.5">
-                      <span>{listing.nearestStation.walkingMinutes} min to {listing.nearestStation.name}</span>
+                      <span style={gradientTextColor(listing.nearestStation.walkingMinutes, walkMin, walkMax)}>
+                        {listing.nearestStation.walkingMinutes} min to {listing.nearestStation.name}
+                      </span>
                       {listing.nearestStation.lines.map((line) => (
                         <TrainLineBadge key={line.name} line={line} />
                       ))}
@@ -563,21 +567,24 @@ function ListingsFeedPage() {
                 )}
               </div>
               <div className="text-right shrink-0">
-                <div className="text-sm text-black/70 dark:text-white/70">
+                <div
+                  className="text-sm text-black/70 dark:text-white/70"
+                  style={formatRelativeDays(listing.postedAt) === "today" ? { color: BEST_COLOR } : undefined}
+                >
                   {formatRelativeDays(listing.postedAt) ?? "—"}
                 </div>
                 <div className="text-xs text-black/50 dark:text-white/50">{formatDate(listing.postedAt)}</div>
               </div>
               <div
-                className="text-right shrink-0 font-semibold rounded px-1.5 py-1 -mx-1.5"
-                style={gradientBackground(listing.price, priceMin, priceMax)}
+                className="text-right shrink-0 font-semibold"
+                style={gradientTextColor(listing.price, priceMin, priceMax)}
               >
                 {listing.price != null ? `$${listing.price.toLocaleString()}` : "—"}
               </div>
               {commuteMode && (
                 <div
-                  className="text-right shrink-0 text-xs text-black/60 dark:text-white/60 rounded px-1.5 py-1 -mx-1.5"
-                  style={gradientBackground(listing.commute?.minutes, commuteMin, commuteMax)}
+                  className="text-right shrink-0 text-xs text-black/60 dark:text-white/60"
+                  style={gradientTextColor(listing.commute?.minutes, commuteMin, commuteMax)}
                 >
                   {formatCommute(listing.commute)}
                 </div>

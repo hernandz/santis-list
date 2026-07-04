@@ -156,6 +156,45 @@ async function attachCommute<T extends Listing>(
   return listings.map((l) => ({ ...l, commute: byId.get(l.id) ?? null }));
 }
 
+// Used by the map view, which shows both figures per listing at once rather
+// than letting the user pick one mode. Transit is cheap (in-process, no
+// external call) and runs for every listing; car needs one batched OSRM
+// request, so it's capped the same way commute-sorting is (see
+// COMMUTE_CAR_SORT_CAP) — a map of ~500 pins is more than that request is
+// meant for.
+async function attachBothCommutes<T extends Listing>(
+  listings: T[],
+  work: { latitude: number; longitude: number },
+): Promise<(T & { commuteCar: CommuteEstimate | null; commuteTransit: CommuteEstimate | null })[]> {
+  const withGeo = listings.filter((l) => l.latitude != null && l.longitude != null);
+  const carBatch = withGeo.slice(0, COMMUTE_CAR_SORT_CAP);
+
+  const [carCommutes, transitCommutes] = await Promise.all([
+    getCarCommutesBatch(
+      carBatch.map((l) => ({ latitude: l.latitude!, longitude: l.longitude! })),
+      work,
+    ),
+    Promise.all(withGeo.map((l) => getTransitCommute(l.city, { latitude: l.latitude!, longitude: l.longitude! }, work))),
+  ]);
+
+  const carById = new Map(carBatch.map((l, i) => [l.id, carCommutes[i]]));
+  const transitById = new Map(withGeo.map((l, i) => [l.id, transitCommutes[i]]));
+
+  return listings.map((l) => ({
+    ...l,
+    commuteCar: carById.get(l.id) ?? null,
+    commuteTransit: transitById.get(l.id) ?? null,
+  }));
+}
+
+async function attachCommuteAny<T extends Listing>(
+  listings: T[],
+  mode: "car" | "transit" | "both",
+  work: { latitude: number; longitude: number },
+) {
+  return mode === "both" ? attachBothCommutes(listings, work) : attachCommute(listings, mode, work);
+}
+
 function comparePrice(a: Listing, b: Listing, direction: "asc" | "desc"): number {
   const av = a.price ?? (direction === "asc" ? Infinity : -Infinity);
   const bv = b.price ?? (direction === "asc" ? Infinity : -Infinity);
@@ -196,7 +235,10 @@ export async function GET(request: Request) {
   const useAllWatches = searchParams.get("useAllWatches") === "true";
   const watchId = searchParams.get("watchId") || undefined;
   const commuteModeParam = searchParams.get("commuteMode");
-  const commuteMode = commuteModeParam === "car" || commuteModeParam === "transit" ? commuteModeParam : null;
+  const commuteMode =
+    commuteModeParam === "car" || commuteModeParam === "transit" || commuteModeParam === "both"
+      ? commuteModeParam
+      : null;
   const workSettings = commuteMode ? await prisma.settings.findUnique({ where: { id: "singleton" } }) : null;
   const work =
     workSettings?.workLatitude != null && workSettings?.workLongitude != null
@@ -247,7 +289,8 @@ export async function GET(request: Request) {
   const where: Prisma.ListingWhereInput = conditions.length > 0 ? { AND: conditions } : {};
 
   const scopeHasNeighborhoods = scopeWatches?.some((w) => w.neighborhoods.length > 0) ?? false;
-  const sortingByCommute = sort === "commute" && commuteMode != null && work != null;
+  const sortingByCommute =
+    sort === "commute" && (commuteMode === "car" || commuteMode === "transit") && work != null;
   const needsEnrichedFilter =
     sort === "distance_to_train" ||
     maxWalkMinutes != null ||
@@ -281,7 +324,7 @@ export async function GET(request: Request) {
 
     const listingsEnriched = await Promise.all(listings.map(enrichListing));
     const listingsWithCommute =
-      commuteMode && work ? await attachCommute(listingsEnriched, commuteMode, work) : listingsEnriched;
+      commuteMode && work ? await attachCommuteAny(listingsEnriched, commuteMode, work) : listingsEnriched;
 
     return NextResponse.json(
       {
@@ -361,7 +404,7 @@ export async function GET(request: Request) {
   // sorting by commute — only needs attaching here for the final page when
   // commute is just being displayed, not sorted by.
   const pagedWithCommute =
-    !sortingByCommute && commuteMode && work ? await attachCommute(paged, commuteMode, work) : paged;
+    !sortingByCommute && commuteMode && work ? await attachCommuteAny(paged, commuteMode, work) : paged;
 
   return NextResponse.json(
     {

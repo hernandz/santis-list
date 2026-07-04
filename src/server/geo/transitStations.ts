@@ -1,4 +1,5 @@
 import { haversineMiles } from "./haversine";
+import { readDiskCache, readDiskCacheStale, writeDiskCache, clearDiskCache } from "@/server/diskCache";
 
 export type TransitLine = { name: string; color: string };
 
@@ -244,8 +245,13 @@ const FETCHERS: Record<string, () => Promise<TransitStation[]>> = {
 
 const cache = new Map<string, { fetchedAt: number; stations: TransitStation[] }>();
 
+function diskCacheKey(city: string): string {
+  return `transit-stations-${city}`;
+}
+
 export function clearTransitStationsCache(): void {
   cache.clear();
+  for (const city of Object.keys(FETCHERS)) clearDiskCache(diskCacheKey(city));
 }
 
 async function getStationsForCity(city: string): Promise<TransitStation[]> {
@@ -254,16 +260,26 @@ async function getStationsForCity(city: string): Promise<TransitStation[]> {
     return cached.stations;
   }
 
+  // Disk cache survives dev server restarts — in-memory alone means every
+  // restart re-fetches live, which is how these free public APIs' rate
+  // limits get tripped during a long dev session.
+  const onDisk = readDiskCache<TransitStation[]>(diskCacheKey(city), STATIONS_TTL_MS);
+  if (onDisk) {
+    cache.set(city, { fetchedAt: Date.now(), stations: onDisk });
+    return onDisk;
+  }
+
   const fetcher = FETCHERS[city];
   if (!fetcher) return [];
 
   try {
     const stations = await fetcher();
     cache.set(city, { fetchedAt: Date.now(), stations });
+    writeDiskCache(diskCacheKey(city), stations);
     return stations;
   } catch (err) {
     console.error(`Failed to fetch transit stations for ${city}:`, err);
-    return cached?.stations ?? [];
+    return cached?.stations ?? readDiskCacheStale<TransitStation[]>(diskCacheKey(city)) ?? [];
   }
 }
 
