@@ -33,6 +33,13 @@ function RecenterOnCityChange({ center, zoom }: { center: [number, number]; zoom
   return null;
 }
 
+const workIcon = L.divIcon({
+  className: "",
+  html: '<div style="font-size:22px;line-height:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.6))">⭐</div>',
+  iconSize: [22, 22],
+  iconAnchor: [11, 11],
+});
+
 export function NeighborhoodMapPicker({
   city,
   boundaries,
@@ -44,6 +51,21 @@ export function NeighborhoodMapPicker({
   selected: string[];
   onToggle: (name: string) => void;
 }) {
+  const [workLocation, setWorkLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/settings", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((body) => {
+        setWorkLocation(
+          body.workLatitude != null && body.workLongitude != null
+            ? { latitude: body.workLatitude, longitude: body.workLongitude }
+            : null,
+        );
+      })
+      .catch(() => setWorkLocation(null));
+  }, []);
+
   const featureCollection = useMemo<FeatureCollection>(
     () => ({
       type: "FeatureCollection",
@@ -83,6 +105,11 @@ export function NeighborhoodMapPicker({
               layer.on("click", () => onToggle(name));
             }}
           />
+        )}
+        {workLocation && (
+          <Marker position={[workLocation.latitude, workLocation.longitude]} icon={workIcon}>
+            <Popup>Your work address</Popup>
+          </Marker>
         )}
       </MapContainer>
     </div>

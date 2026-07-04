@@ -3,7 +3,7 @@ import { prisma } from "@/server/db/prisma";
 import type { Listing, Prisma } from "@/generated/prisma/client";
 import { getNearestStations, type NearestStation } from "@/server/geo/transitStations";
 import { getNeighborhoodForPoint } from "@/server/geo/neighborhoodBoundaries";
-import { getCarCommutesBatch, getTransitCommute, type CommuteEstimate } from "@/server/geo/commute";
+import { getCarCommutesBatch, getTransitCommute, usesGoogleTransit, type CommuteEstimate } from "@/server/geo/commute";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +19,11 @@ const TRANSIT_SORT_CAP = 2000;
 // request. That request's coordinate list is bounded here — the public demo
 // routing server isn't meant for huge batches, so this trades a smaller
 // candidate pool for a request size that's actually reasonable to send it.
-const COMMUTE_CAR_SORT_CAP = 300;
+// Also applied to transit whenever a Google Maps key is configured — real
+// transit lookups are one paid request per listing, not free/in-process like
+// the heuristic fallback, so a huge page (e.g. the map's ~500 pins) shouldn't
+// fire that many at once.
+const COMMUTE_EXTERNAL_API_CAP = 300;
 // A second, further station is only worth surfacing if it's still a
 // reasonable walk — otherwise it's just noise.
 const NEXT_STATION_MAX_WALK_MINUTES = 20;
@@ -148,37 +152,42 @@ async function attachCommute<T extends Listing>(
   }
 
   // Each listing's own city (not a single page-level filter) — results can
-  // span cities when no city filter is active.
+  // span cities when no city filter is active. Only capped when transit
+  // means a real paid Google lookup per listing — the free heuristic
+  // fallback has no reason to limit how many it covers.
+  const transitBatch = usesGoogleTransit() ? withGeo.slice(0, COMMUTE_EXTERNAL_API_CAP) : withGeo;
   const commutes = await Promise.all(
-    withGeo.map((l) => getTransitCommute(l.city, { latitude: l.latitude!, longitude: l.longitude! }, work)),
+    transitBatch.map((l) => getTransitCommute(l.city, { latitude: l.latitude!, longitude: l.longitude! }, work)),
   );
-  const byId = new Map(withGeo.map((l, i) => [l.id, commutes[i]]));
+  const byId = new Map(transitBatch.map((l, i) => [l.id, commutes[i]]));
   return listings.map((l) => ({ ...l, commute: byId.get(l.id) ?? null }));
 }
 
 // Used by the map view, which shows both figures per listing at once rather
-// than letting the user pick one mode. Transit is cheap (in-process, no
-// external call) and runs for every listing; car needs one batched OSRM
-// request, so it's capped the same way commute-sorting is (see
-// COMMUTE_CAR_SORT_CAP) — a map of ~500 pins is more than that request is
-// meant for.
+// than letting the user pick one mode. Car needs one batched OSRM request, so
+// it's capped (see COMMUTE_EXTERNAL_API_CAP) — a map of ~500 pins is more
+// than that request is meant for. Transit is capped the same way only when
+// it's a real per-listing Google lookup, not the free in-process heuristic.
 async function attachBothCommutes<T extends Listing>(
   listings: T[],
   work: { latitude: number; longitude: number },
 ): Promise<(T & { commuteCar: CommuteEstimate | null; commuteTransit: CommuteEstimate | null })[]> {
   const withGeo = listings.filter((l) => l.latitude != null && l.longitude != null);
-  const carBatch = withGeo.slice(0, COMMUTE_CAR_SORT_CAP);
+  const carBatch = withGeo.slice(0, COMMUTE_EXTERNAL_API_CAP);
+  const transitBatch = usesGoogleTransit() ? withGeo.slice(0, COMMUTE_EXTERNAL_API_CAP) : withGeo;
 
   const [carCommutes, transitCommutes] = await Promise.all([
     getCarCommutesBatch(
       carBatch.map((l) => ({ latitude: l.latitude!, longitude: l.longitude! })),
       work,
     ),
-    Promise.all(withGeo.map((l) => getTransitCommute(l.city, { latitude: l.latitude!, longitude: l.longitude! }, work))),
+    Promise.all(
+      transitBatch.map((l) => getTransitCommute(l.city, { latitude: l.latitude!, longitude: l.longitude! }, work)),
+    ),
   ]);
 
   const carById = new Map(carBatch.map((l, i) => [l.id, carCommutes[i]]));
-  const transitById = new Map(withGeo.map((l, i) => [l.id, transitCommutes[i]]));
+  const transitById = new Map(transitBatch.map((l, i) => [l.id, transitCommutes[i]]));
 
   return listings.map((l) => ({
     ...l,
@@ -341,7 +350,9 @@ export async function GET(request: Request) {
   // Transit-aware path: pull a capped, broad set matching the SQL-level filters,
   // enrich all of them with live nearestStation data, then apply the walk-time
   // filter/sort and paginate in memory.
-  const candidateCap = sortingByCommute && commuteMode === "car" ? COMMUTE_CAR_SORT_CAP : TRANSIT_SORT_CAP;
+  const usesExternalCommuteApi =
+    sortingByCommute && (commuteMode === "car" || (commuteMode === "transit" && usesGoogleTransit()));
+  const candidateCap = usesExternalCommuteApi ? COMMUTE_EXTERNAL_API_CAP : TRANSIT_SORT_CAP;
   const [whereTotal, candidates] = await Promise.all([
     prisma.listing.count({ where }),
     prisma.listing.findMany({
