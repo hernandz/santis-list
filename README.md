@@ -1,4 +1,4 @@
-# Santi's List
+# santi's list
 
 Crawls Craigslist for new apartment listings matching your saved searches (city, neighborhood, price, bedrooms, bathrooms) and alerts you by email — immediately or as an hourly/daily digest. The site itself is also a browsable feed of everything the crawler has found.
 
