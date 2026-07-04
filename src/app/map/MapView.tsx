@@ -208,7 +208,7 @@ export function MapView({
                 <div className="text-xs text-black/60">🚆 {formatCommuteInfo(listing.commuteTransit)} to work</div>
               )}
               {formatCommuteInfo(listing.commuteBike) && (
-                <div className="text-xs text-black/60">🚲 {formatCommuteInfo(listing.commuteBike)} to work</div>
+                <div className="text-xs text-black/60">🚴 {formatCommuteInfo(listing.commuteBike)} to work</div>
               )}
               {formatCommuteInfo(listing.commuteCar) && (
                 <div className="text-xs text-black/60">🚗 {formatCommuteInfo(listing.commuteCar)} to work</div>

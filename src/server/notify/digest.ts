@@ -43,7 +43,7 @@ async function flushDigest(frequency: "HOURLY" | "DAILY") {
     try {
       await emailChannel.send({
         to: toEmail,
-        subject: `${listings.length} new listing${listings.length > 1 ? "s" : ""} for "${watch.name}" (${frequency.toLowerCase()} digest)`,
+        subject: `[santi's list] ${listings.length} new listing${listings.length > 1 ? "s" : ""} for "${watch.name}" (${frequency.toLowerCase()} digest)`,
         watchName: watch.name,
         listings,
       });

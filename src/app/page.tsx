@@ -54,7 +54,7 @@ function defaultCommuteModeForCity(city: string): "car" | "transit" {
 }
 
 function commuteModeEmoji(mode: "" | "car" | "bike" | "transit"): string {
-  return mode === "car" ? "🚗" : mode === "bike" ? "🚲" : "🚆";
+  return mode === "car" ? "🚗" : mode === "bike" ? "🚴" : "🚆";
 }
 
 type WatchSummary = { id: string; name: string; city: string };

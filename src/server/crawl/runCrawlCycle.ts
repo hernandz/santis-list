@@ -242,7 +242,7 @@ async function processWatch(watch: Watch, summary: CrawlCycleSummary, searchCach
     try {
       await emailChannel.send({
         to: alertEmail,
-        subject: `${immediateMatches.length} new listing${immediateMatches.length > 1 ? "s" : ""} for "${watch.name}"`,
+        subject: `[santi's list] ${immediateMatches.length} new listing${immediateMatches.length > 1 ? "s" : ""} for "${watch.name}"`,
         watchName: watch.name,
         listings: immediateMatches,
       });
