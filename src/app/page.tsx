@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { VISIBLE_CITIES } from "@/lib/craigslistCities";
 import { TrainLineBadge, type TransitLine } from "@/components/TrainLineBadge";
@@ -136,11 +137,14 @@ function ListingsFeedPage() {
 
   const [trainLines, setTrainLines] = useState<TransitLine[]>([]);
 
+  const [watchesLoaded, setWatchesLoaded] = useState(false);
+
   useEffect(() => {
     fetch("/api/watches", { cache: "no-store" })
       .then((res) => res.json())
       .then(setWatches)
-      .catch(() => setWatches([]));
+      .catch(() => setWatches([]))
+      .finally(() => setWatchesLoaded(true));
   }, []);
 
   // Train lines are city-specific (NYC letters, BART colors, LA Metro names),
@@ -307,6 +311,26 @@ function ListingsFeedPage() {
           Everything the crawler has found for your active saved searches.
         </p>
       </div>
+
+      {watchesLoaded && watches.length === 0 && (
+        <div className="border border-black/10 dark:border-white/15 rounded-lg p-4 flex flex-col gap-1">
+          <p className="text-sm font-medium">👋 New here? Get set up in two steps:</p>
+          <p className="text-sm text-black/70 dark:text-white/70">
+            1. Head to{" "}
+            <Link href="/settings" className="underline">
+              Settings
+            </Link>{" "}
+            and add your alert email and work address (for commute times).
+          </p>
+          <p className="text-sm text-black/70 dark:text-white/70">
+            2. Then{" "}
+            <Link href="/watches/new" className="underline">
+              create a saved search
+            </Link>{" "}
+            — city, neighborhoods, price range — and the crawler takes it from there.
+          </p>
+        </div>
+      )}
 
       <label className="flex flex-col gap-1 text-xs max-w-xs">
         Saved search scope
