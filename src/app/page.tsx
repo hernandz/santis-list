@@ -633,7 +633,7 @@ function ListingsFeedPage() {
                     </div>
                     {listing.nextStation && (
                       <div className="flex items-center gap-1.5 text-black/50 dark:text-white/50">
-                        <span>+{listing.nextStation.walkingMinutes} min to {listing.nextStation.name}</span>
+                        <span>also {listing.nextStation.walkingMinutes} min to {listing.nextStation.name}</span>
                         {listing.nextStation.lines.map((line) => (
                           <TrainLineBadge key={line.name} line={line} />
                         ))}
