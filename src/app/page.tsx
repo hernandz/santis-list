@@ -94,6 +94,12 @@ function hueColor(hue: number): string {
 }
 const BEST_COLOR = hueColor(120); // green
 
+// Fixed (not relative to what's on screen) — 0 min is always green, 20 min
+// (the cap already used server-side for a "next station" to even qualify)
+// is always red, so the color means the same thing across every search.
+const WALK_MIN_MINUTES = 0;
+const WALK_MAX_MINUTES = 20;
+
 // Red (worst/highest) → green (best/lowest) text color, relative to the
 // min/max of whatever's currently on screen — not a fixed absolute scale,
 // since "a good price" means different things in different searches.
@@ -291,7 +297,6 @@ function ListingsFeedPage() {
   // thousands of rows across many un-fetched pages, and colors would have to
   // shift as you compute more of it anyway.
   const [priceMin, priceMax] = numericRange(data?.listings.map((l) => l.price) ?? []);
-  const [walkMin, walkMax] = numericRange(data?.listings.map((l) => l.nearestStation?.walkingMinutes) ?? []);
   const [commuteMin, commuteMax] = numericRange(data?.listings.map((l) => l.commute?.minutes) ?? []);
 
   function handleSelectScope(next: string) {
@@ -628,7 +633,7 @@ function ListingsFeedPage() {
                 {listing.nearestStation ? (
                   <>
                     <div className="flex items-center gap-1.5">
-                      <span style={gradientTextColor(listing.nearestStation.walkingMinutes, walkMin, walkMax)}>
+                      <span style={gradientTextColor(listing.nearestStation.walkingMinutes, WALK_MIN_MINUTES, WALK_MAX_MINUTES)}>
                         {listing.nearestStation.walkingMinutes} min to {listing.nearestStation.name}
                       </span>
                       {listing.nearestStation.lines.map((line) => (
