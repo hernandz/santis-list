@@ -461,8 +461,8 @@ function ListingsFeedPage() {
             {commuteMode && <option value="commute">Commute to work: shortest first</option>}
           </select>
         </label>
-        <label className="flex flex-col gap-1 text-xs col-span-2 sm:col-span-1">
-          Commute to work (estimate)
+        <label className="flex flex-col gap-1 text-xs col-span-2">
+          <span className="whitespace-nowrap">Commute to work (estimate)</span>
           <select
             className="border rounded px-2 py-1 text-sm border-black/15 dark:border-white/20 bg-transparent"
             value={commuteMode}
