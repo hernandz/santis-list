@@ -38,23 +38,23 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col">
         <ThemeSync />
         <header className="border-b border-black/10 dark:border-white/15">
-          <nav className="mx-auto max-w-5xl flex items-center gap-6 px-4 py-3 text-sm">
-            <Link href="/" className="font-semibold flex items-center gap-1.5">
+          <nav className="mx-auto max-w-5xl flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 text-sm">
+            <Link href="/" className="font-semibold flex items-center gap-1.5 whitespace-nowrap">
               <span aria-hidden>🍉</span> santi&apos;s list
             </Link>
-            <Link href="/" className="text-black/70 dark:text-white/70 hover:underline">
+            <Link href="/" className="text-black/70 dark:text-white/70 hover:underline whitespace-nowrap">
               Listings
             </Link>
-            <Link href="/map" className="text-black/70 dark:text-white/70 hover:underline">
+            <Link href="/map" className="text-black/70 dark:text-white/70 hover:underline whitespace-nowrap">
               Map
             </Link>
-            <Link href="/watches" className="text-black/70 dark:text-white/70 hover:underline">
+            <Link href="/watches" className="text-black/70 dark:text-white/70 hover:underline whitespace-nowrap">
               Saved Searches
             </Link>
-            <Link href="/settings" className="text-black/70 dark:text-white/70 hover:underline">
+            <Link href="/settings" className="text-black/70 dark:text-white/70 hover:underline whitespace-nowrap">
               Settings
             </Link>
-            <span className="ml-auto">
+            <span className="ml-auto whitespace-nowrap">
               <CrawlStatusBadge />
             </span>
           </nav>

@@ -278,9 +278,13 @@ function ListingsFeedPage() {
     return <span aria-hidden> {direction === "asc" ? "↑" : direction === "desc" ? "↓" : "•"}</span>;
   }
 
+  // Fixed pixel column widths only apply from sm: up — below that, rows
+  // stack into a single-column card layout instead (see the header/row
+  // className usage below), since fixed-width columns can't shrink to fit a
+  // phone screen without overlapping/illegible content.
   const gridColsClass = commuteMode
-    ? "grid-cols-[1fr_170px_130px_120px_100px]"
-    : "grid-cols-[1fr_170px_120px_100px]";
+    ? "sm:grid-cols-[1fr_170px_130px_120px_100px]"
+    : "sm:grid-cols-[1fr_170px_120px_100px]";
 
   // Gradient ranges are computed over whatever's currently on screen (this
   // page of results), not the whole search — the full result set could span
@@ -543,7 +547,7 @@ function ListingsFeedPage() {
       )}
 
       <div className="border border-black/10 dark:border-white/15 rounded-lg overflow-hidden">
-        <div className={`grid ${gridColsClass} gap-4 px-4 py-2 text-xs font-medium text-black/50 dark:text-white/50 border-b border-black/10 dark:border-white/15`}>
+        <div className={`hidden sm:grid ${gridColsClass} gap-4 px-4 py-2 text-xs font-medium text-black/50 dark:text-white/50 border-b border-black/10 dark:border-white/15`}>
           <div className="flex items-center gap-2">
             Listing
             {loading && (
@@ -597,10 +601,10 @@ function ListingsFeedPage() {
               href={listing.url}
               target="_blank"
               rel="noreferrer"
-              className={`grid ${gridColsClass} items-center gap-4 px-4 py-3 hover:bg-black/[.03] dark:hover:bg-white/[.05]`}
+              className={`flex flex-col gap-2 sm:grid ${gridColsClass} sm:items-center sm:gap-4 px-4 py-3 hover:bg-black/[.03] dark:hover:bg-white/[.05]`}
             >
               <div className="min-w-0">
-                <div className="font-medium truncate">{listing.title}</div>
+                <div className="font-medium sm:truncate">{listing.title}</div>
                 <div className="text-xs text-black/60 dark:text-white/60">
                   {formatLocation(listing)}
                   {listing.bedrooms != null ? ` · ${listing.bedrooms}bd` : ""}
@@ -644,7 +648,7 @@ function ListingsFeedPage() {
                   <span className="text-black/30 dark:text-white/30">—</span>
                 )}
               </div>
-              <div className="text-right shrink-0">
+              <div className="text-left sm:text-right shrink-0">
                 <div
                   className="text-sm text-black/70 dark:text-white/70"
                   style={formatRelativeDays(listing.postedAt) === "today" ? { color: BEST_COLOR } : undefined}
@@ -654,16 +658,17 @@ function ListingsFeedPage() {
                 <div className="text-xs text-black/50 dark:text-white/50">{formatDate(listing.postedAt)}</div>
               </div>
               <div
-                className="text-right shrink-0 font-semibold"
+                className="text-left sm:text-right shrink-0 font-semibold"
                 style={gradientTextColor(listing.price, priceMin, priceMax)}
               >
                 {listing.price != null ? `$${listing.price.toLocaleString()}` : "—"}
               </div>
               {commuteMode && (
                 <div
-                  className="text-right shrink-0 text-xs text-black/60 dark:text-white/60"
+                  className="text-left sm:text-right shrink-0 text-xs text-black/60 dark:text-white/60"
                   style={gradientTextColor(listing.commute?.minutes, commuteMin, commuteMax)}
                 >
+                  <span className="sm:hidden">{commuteModeEmoji(commuteMode)} </span>
                   {formatCommute(listing.commute)}
                 </div>
               )}
