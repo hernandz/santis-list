@@ -395,7 +395,7 @@ function ListingsFeedPage() {
           Neighborhood
           <input
             className="border rounded px-2 py-1 text-sm border-black/15 dark:border-white/20 bg-transparent"
-            placeholder="ridgewood"
+            placeholder="e.g. ridgewood"
             value={filters.neighborhood}
             onChange={(e) => updateFilter("neighborhood", e.target.value)}
           />

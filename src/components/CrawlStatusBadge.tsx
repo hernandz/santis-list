@@ -17,6 +17,7 @@ type CrawlStatus = {
   inProgress: boolean;
   lastResult: { summary: CrawlSummary; finishedAt: string; failed: boolean; error?: string } | null;
   progress: CrawlProgress | null;
+  mostRecentListingSeenAt: string | null;
 };
 
 // Poll quickly while a crawl is actually running (so the progress bar feels
@@ -35,6 +36,15 @@ function timeAgo(iso: string): string {
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.round(minutes / 60);
   return `${hours}h ago`;
+}
+
+function exactTimestamp(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 export function CrawlStatusBadge() {
@@ -88,7 +98,21 @@ export function CrawlStatusBadge() {
   }
 
   if (!status.lastResult) {
-    return <span className="text-xs text-black/40 dark:text-white/40">No crawl yet</span>;
+    // lastResult only lives in memory and resets to null on every server
+    // restart, even though crawling has continued for days — fall back to
+    // real data freshness (derived from the DB, so it survives restarts)
+    // instead of misleadingly claiming there's been no crawl at all.
+    if (!status.mostRecentListingSeenAt) {
+      return <span className="text-xs text-black/40 dark:text-white/40">No data yet</span>;
+    }
+    return (
+      <span
+        className="text-xs text-black/40 dark:text-white/40"
+        title={`Data as of ${exactTimestamp(status.mostRecentListingSeenAt)}`}
+      >
+        Data as of {timeAgo(status.mostRecentListingSeenAt)}
+      </span>
+    );
   }
 
   const { summary, finishedAt, failed } = status.lastResult;
