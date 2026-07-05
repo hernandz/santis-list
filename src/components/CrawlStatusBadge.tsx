@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type CrawlSummary = {
   watchesProcessed: number;
@@ -11,12 +11,22 @@ type CrawlSummary = {
   immediateNotificationsSent: number;
 };
 
+type CrawlProgress = { total: number; done: number; currentWatchName: string | null };
+
 type CrawlStatus = {
   inProgress: boolean;
   lastResult: { summary: CrawlSummary; finishedAt: string; failed: boolean; error?: string } | null;
+  progress: CrawlProgress | null;
 };
 
-const POLL_MS = 15_000;
+// Poll quickly while a crawl is actually running (so the progress bar feels
+// live), fall back to an infrequent idle poll otherwise — a recursive
+// setTimeout rather than setInterval so the delay can change between ticks.
+const POLL_MS_ACTIVE = 2_000;
+// A single watch crawls in single-digit seconds — 15s idle polling meant the
+// badge could miss a whole short crawl between ticks and jump straight from
+// idle to "finished" with no visible progress in between.
+const POLL_MS_IDLE = 5_000;
 
 function timeAgo(iso: string): string {
   const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
@@ -29,6 +39,7 @@ function timeAgo(iso: string): string {
 
 export function CrawlStatusBadge() {
   const [status, setStatus] = useState<CrawlStatus | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -36,28 +47,42 @@ export function CrawlStatusBadge() {
     async function poll() {
       try {
         const res = await fetch("/api/crawl/status", { cache: "no-store" });
-        const body = await res.json();
-        if (!cancelled) setStatus(body);
+        const body: CrawlStatus = await res.json();
+        if (cancelled) return;
+        setStatus(body);
+        timerRef.current = setTimeout(poll, body.inProgress ? POLL_MS_ACTIVE : POLL_MS_IDLE);
       } catch {
         // transient — keep showing the last known status rather than blanking it
+        if (!cancelled) timerRef.current = setTimeout(poll, POLL_MS_IDLE);
       }
     }
 
     poll();
-    const interval = setInterval(poll, POLL_MS);
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, []);
 
   if (!status) return null;
 
   if (status.inProgress) {
+    const progress = status.progress;
+    const pct = progress && progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : null;
     return (
       <span className="flex items-center gap-1.5 text-xs text-black/60 dark:text-white/60">
-        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" aria-hidden />
-        Crawling…
+        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse shrink-0" aria-hidden />
+        <span className="whitespace-nowrap">
+          Crawling{progress ? ` (${progress.done}/${progress.total})` : "…"}
+        </span>
+        {pct != null && (
+          <span
+            className="w-16 h-1.5 rounded-full bg-black/10 dark:bg-white/15 overflow-hidden shrink-0"
+            title={progress?.currentWatchName ?? undefined}
+          >
+            <span className="block h-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
+          </span>
+        )}
       </span>
     );
   }
