@@ -55,10 +55,16 @@ function currentTimestamp(): number {
 // its own real age).
 const MARKER_FADE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
-function opacityForListing(listing: MapListing, today: number, minOpacity: number): number {
-  const age = Math.max(0, today - listingTimestamp(listing));
+function opacityForTimestamp(timestamp: number, today: number, minOpacity: number): number {
+  const age = Math.max(0, today - timestamp);
   const t = 1 - Math.min(1, age / MARKER_FADE_WINDOW_MS);
   return minOpacity + t * (1 - minOpacity);
+}
+
+// A grouped marker's fade reflects its freshest listing — one recent posting
+// at a location should still visually pop even if other units there are stale.
+function mostRecentTimestamp(group: MapListing[]): number {
+  return Math.max(...group.map(listingTimestamp));
 }
 
 function formatListingAge(listing: MapListing): string {
@@ -99,12 +105,25 @@ function RecenterOnCityChange({ center, zoom }: { center: [number, number]; zoom
 // opaque so every marker (regardless of age) stays equally easy to see and
 // click on a crowded map.
 const MARKER_MIN_OPACITY = 0.5;
-function listingMarkerIcon(opacity: number): L.DivIcon {
+// Listings sharing the exact same coordinates (e.g. multiple units in the same
+// building) are grouped into a single marker — count > 1 renders that count
+// directly on the dot (bigger, so the number stays legible) instead of one
+// marker per listing stacked invisibly on top of each other.
+function listingMarkerIcon(opacity: number, count: number): L.DivIcon {
+  if (count <= 1) {
+    return L.divIcon({
+      className: "",
+      html: `<div style="width:14px;height:14px;border-radius:9999px;background:rgba(220,38,38,${opacity});border:2px solid white;box-shadow:0 0 0 1px rgba(0,0,0,0.4)"></div>`,
+      iconSize: [14, 14],
+      iconAnchor: [7, 7],
+    });
+  }
+  const size = 20;
   return L.divIcon({
     className: "",
-    html: `<div style="width:14px;height:14px;border-radius:9999px;background:rgba(220,38,38,${opacity});border:2px solid white;box-shadow:0 0 0 1px rgba(0,0,0,0.4)"></div>`,
-    iconSize: [14, 14],
-    iconAnchor: [7, 7],
+    html: `<div style="width:${size}px;height:${size}px;border-radius:9999px;background:rgba(220,38,38,${opacity});border:2px solid white;box-shadow:0 0 0 1px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:700;line-height:1">${count}</div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
   });
 }
 
@@ -157,6 +176,21 @@ export function MapView({
   // or older fades all the way down to MARKER_MIN_OPACITY, regardless of
   // what else is currently on screen.
   const todayTimestamp = currentTimestamp();
+
+  // Listings that share the exact same coordinates (e.g. several units in
+  // the same building) would otherwise render as fully-overlapping markers
+  // you can't tell apart or click through individually — grouped into one
+  // marker with a combined popup instead.
+  const listingGroups = useMemo(() => {
+    const byLocation = new Map<string, MapListing[]>();
+    for (const listing of listings) {
+      const key = `${listing.latitude.toFixed(6)},${listing.longitude.toFixed(6)}`;
+      const group = byLocation.get(key);
+      if (group) group.push(listing);
+      else byLocation.set(key, [listing]);
+    }
+    return Array.from(byLocation.values());
+  }, [listings]);
 
   const highlightCollection = useMemo<FeatureCollection>(
     () => ({
@@ -213,63 +247,93 @@ export function MapView({
           <Popup>Your work address</Popup>
         </Marker>
       )}
-      {listings.map((listing) => (
-        <Marker
-          key={listing.id}
-          position={[listing.latitude, listing.longitude]}
-          icon={listingMarkerIcon(opacityForListing(listing, todayTimestamp, MARKER_MIN_OPACITY))}
-        >
-          <Popup>
-            <div className="flex flex-col gap-1 max-w-52">
-              <a href={listing.url} target="_blank" rel="noreferrer" className="font-medium">
-                {listing.title}
-              </a>
-              <div className="text-sm">
-                {listing.price != null ? `$${listing.price.toLocaleString()}` : "—"}
-                {listing.bedrooms != null ? ` · ${listing.bedrooms}bd` : ""}
-                {listing.bathrooms != null ? ` / ${listing.bathrooms}ba` : ""}
-              </div>
-              <div className="text-xs text-black/50">Listed {formatListingAge(listing)}</div>
-              {listing.boundaryNeighborhood && (
-                <div className="text-xs text-black/60">
-                  {listing.locationText && !listing.locationText.toLowerCase().includes(listing.boundaryNeighborhood.toLowerCase())
-                    ? `${listing.locationText} → verified: ${listing.boundaryNeighborhood}`
-                    : `${listing.boundaryNeighborhood} (verified)`}
-                </div>
-              )}
-              {listing.nearestStation && (
-                <div className="flex items-center gap-1.5 text-xs text-black/60">
-                  <span>
-                    {listing.nearestStation.walkingMinutes} min walk to {listing.nearestStation.name}
-                  </span>
-                  {listing.nearestStation.lines.map((line) => (
-                    <TrainLineBadge key={line.name} line={line} />
+      {listingGroups.map((group) => {
+        const [first] = group;
+        const opacity = opacityForTimestamp(mostRecentTimestamp(group), todayTimestamp, MARKER_MIN_OPACITY);
+        return (
+          <Marker
+            key={`${first.latitude},${first.longitude}`}
+            position={[first.latitude, first.longitude]}
+            icon={listingMarkerIcon(opacity, group.length)}
+          >
+            <Popup>
+              {group.length === 1 ? (
+                <ListingDetail listing={first} />
+              ) : (
+                <div className="flex flex-col gap-2 max-w-64 max-h-64 overflow-y-auto">
+                  <div className="font-medium text-sm">{group.length} listings at this location</div>
+                  {group.map((listing) => (
+                    <div key={listing.id} className="flex flex-col gap-0.5 border-t border-black/10 pt-2 first:border-t-0 first:pt-0">
+                      <a href={listing.url} target="_blank" rel="noreferrer" className="font-medium text-sm">
+                        {listing.title}
+                      </a>
+                      <div className="text-xs text-black/60">
+                        {listing.price != null ? `$${listing.price.toLocaleString()}` : "—"}
+                        {listing.bedrooms != null ? ` · ${listing.bedrooms}bd` : ""}
+                        {listing.bathrooms != null ? ` / ${listing.bathrooms}ba` : ""}
+                        {" · "}
+                        {formatListingAge(listing)}
+                      </div>
+                    </div>
                   ))}
                 </div>
               )}
-              {listing.nextStation && (
-                <div className="flex items-center gap-1.5 text-xs text-black/60">
-                  <span>
-                    also {listing.nextStation.walkingMinutes} min walk to {listing.nextStation.name}
-                  </span>
-                  {listing.nextStation.lines.map((line) => (
-                    <TrainLineBadge key={line.name} line={line} />
-                  ))}
-                </div>
-              )}
-              {formatCommuteInfo(listing.commuteTransit) && (
-                <div className="text-xs text-black/60">🚆 {formatCommuteInfo(listing.commuteTransit)} to work</div>
-              )}
-              {formatCommuteInfo(listing.commuteBike) && (
-                <div className="text-xs text-black/60">🚴 {formatCommuteInfo(listing.commuteBike)} to work</div>
-              )}
-              {formatCommuteInfo(listing.commuteCar) && (
-                <div className="text-xs text-black/60">🚗 {formatCommuteInfo(listing.commuteCar)} to work</div>
-              )}
-            </div>
-          </Popup>
-        </Marker>
-      ))}
+            </Popup>
+          </Marker>
+        );
+      })}
     </MapContainer>
+  );
+}
+
+function ListingDetail({ listing }: { listing: MapListing }) {
+  return (
+    <div className="flex flex-col gap-1 max-w-52">
+      <a href={listing.url} target="_blank" rel="noreferrer" className="font-medium">
+        {listing.title}
+      </a>
+      <div className="text-sm">
+        {listing.price != null ? `$${listing.price.toLocaleString()}` : "—"}
+        {listing.bedrooms != null ? ` · ${listing.bedrooms}bd` : ""}
+        {listing.bathrooms != null ? ` / ${listing.bathrooms}ba` : ""}
+      </div>
+      <div className="text-xs text-black/50">Listed {formatListingAge(listing)}</div>
+      {listing.boundaryNeighborhood && (
+        <div className="text-xs text-black/60">
+          {listing.locationText && !listing.locationText.toLowerCase().includes(listing.boundaryNeighborhood.toLowerCase())
+            ? `${listing.locationText} → verified: ${listing.boundaryNeighborhood}`
+            : `${listing.boundaryNeighborhood} (verified)`}
+        </div>
+      )}
+      {listing.nearestStation && (
+        <div className="flex items-center gap-1.5 text-xs text-black/60">
+          <span>
+            {listing.nearestStation.walkingMinutes} min walk to {listing.nearestStation.name}
+          </span>
+          {listing.nearestStation.lines.map((line) => (
+            <TrainLineBadge key={line.name} line={line} />
+          ))}
+        </div>
+      )}
+      {listing.nextStation && (
+        <div className="flex items-center gap-1.5 text-xs text-black/60">
+          <span>
+            also {listing.nextStation.walkingMinutes} min walk to {listing.nextStation.name}
+          </span>
+          {listing.nextStation.lines.map((line) => (
+            <TrainLineBadge key={line.name} line={line} />
+          ))}
+        </div>
+      )}
+      {formatCommuteInfo(listing.commuteTransit) && (
+        <div className="text-xs text-black/60">🚆 {formatCommuteInfo(listing.commuteTransit)} to work</div>
+      )}
+      {formatCommuteInfo(listing.commuteBike) && (
+        <div className="text-xs text-black/60">🚴 {formatCommuteInfo(listing.commuteBike)} to work</div>
+      )}
+      {formatCommuteInfo(listing.commuteCar) && (
+        <div className="text-xs text-black/60">🚗 {formatCommuteInfo(listing.commuteCar)} to work</div>
+      )}
+    </div>
   );
 }

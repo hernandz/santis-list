@@ -148,7 +148,16 @@ export default function MapPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-xl font-semibold">Map</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-xl font-semibold">Map</h1>
+          {loading && (
+            <span
+              className="inline-block w-4 h-4 border-2 border-black/40 dark:border-white/40 border-t-transparent rounded-full animate-spin"
+              role="status"
+              aria-label="Loading listings"
+            />
+          )}
+        </div>
         <p className="text-sm text-black/60 dark:text-white/60">
           Listings plotted by their Craigslist-provided location, with distance to the nearest transit
           station.

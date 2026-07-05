@@ -307,6 +307,14 @@ function ListingsFeedPage() {
         setCommuteMode(defaultCommuteModeForCity(watch.city));
         setTrainLinesExpanded(watch.city !== "losangeles");
       }
+    } else if (next === ALL_WATCHES_SCOPE) {
+      // "All saved searches" can span multiple watches across different
+      // cities — a leftover ad-hoc City filter from browsing (or from a
+      // previously selected specific watch) would silently AND against every
+      // watch's own city condition and can zero out the results entirely if
+      // it doesn't match any active watch's city. Reset it so switching back
+      // to this scope always shows everything it should.
+      setFilters((prev) => ({ ...prev, city: "", trainLines: "" }));
     }
   }
 
@@ -454,7 +462,7 @@ function ListingsFeedPage() {
           </select>
         </label>
         <label className="flex flex-col gap-1 text-xs col-span-2 sm:col-span-1">
-          Commute to work
+          Commute to work (estimate)
           <select
             className="border rounded px-2 py-1 text-sm border-black/15 dark:border-white/20 bg-transparent"
             value={commuteMode}
@@ -467,7 +475,7 @@ function ListingsFeedPage() {
             <option value="">Off</option>
             <option value="car">By car</option>
             <option value="bike">By bike</option>
-            <option value="transit">By transit (estimate)</option>
+            <option value="transit">By transit</option>
           </select>
           {commuteMode && !hasWorkAddress && (
             <span className="text-black/40 dark:text-white/40">Set a work address in Settings first</span>
