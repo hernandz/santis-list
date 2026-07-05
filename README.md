@@ -6,13 +6,14 @@ The site is also a browsable, filterable/sortable feed of everything the crawler
 
 ## Features
 
-- **Saved searches** — city, Craigslist sub-area (scopes the crawl to just that area, avoiding Craigslist's own recency-window dilution in huge metros), any number of neighborhoods, price/bed/bath filters, notification frequency.
+- **Saved searches** — city, Craigslist sub-area (scopes the crawl to just that area, avoiding Craigslist's own recency-window dilution in huge metros), any number of neighborhoods, price/bed/bath filters, notification frequency; pause/resume any search directly from the Saved Searches list, not just via the emailed one-click link.
 - **Boundary-verified neighborhoods** — a listing only matches a neighborhood if its real coordinates fall inside that neighborhood's official city GIS polygon, not just whatever text the poster happened to write.
-- **Listings feed** (`/`) — sortable by newest, price, distance to train, or commute time; a red→green color gradient on price/train/commute columns scaled to what's on screen.
-- **Map view** (`/map`) — listings plotted by location, transit stations colored by line, your work address marked with a star, older listings fade out, and it reports how many crawled listings couldn't be plotted for lack of a location.
+- **Listings feed** (`/`) — sortable by newest, price, distance to train, or commute time; a red→green color gradient on price/train/commute columns scaled to what's on screen; flags listings missing location data as "not on map".
+- **Map view** (`/map`) — listings plotted by location, transit stations colored by line, your work address marked with a star; listings older than 30 days fade toward a floor (the white outline always stays fully solid so nothing becomes unclickable); listings sharing the exact same coordinates (e.g. multiple units in one building) collapse into a single marker showing the count, with a combined popup; reports how many crawled listings couldn't be plotted for lack of a location, scoped to whatever saved search(es) are currently selected.
 - **Commute times** — by car (OSRM), by bike (a separate dedicated bike-routing instance — the same OSRM demo server silently reuses its driving graph for "bike" otherwise), and by transit (Google Directions if `GOOGLE_MAPS_API_KEY` is set, else a free straight-line estimate).
 - **Notifications** — immediate per-match email, or hourly/daily digests; every email includes a one-click "pause this search" link that needs no login.
 - **Settings** (`/settings`) — alert email, work address (geocoded, with autocomplete confirmation), light/dark/system theme, and a "clear cache & re-crawl" maintenance action.
+- **Live crawl status** (top-right nav) — a progress bar while a crawl is running; otherwise "Data as of {time}", derived from the most recently-seen listing so it stays accurate across server restarts (crawl-cycle results themselves are only kept in memory).
 - **Optional password gate** — set `APP_PASSWORD` to require a login before anyone can use the site at all.
 
 ## Local development (Homebrew Postgres)
