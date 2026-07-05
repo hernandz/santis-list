@@ -40,7 +40,8 @@ export default function RootLayout({
         <header className="border-b border-black/10 dark:border-white/15">
           <nav className="mx-auto max-w-5xl flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 text-sm">
             <Link href="/" className="font-semibold flex items-center gap-1.5 whitespace-nowrap">
-              <span aria-hidden>🍉</span> santi&apos;s list
+              <span aria-hidden>🍉</span>
+              <span className="text-lg" style={{ fontFamily: '"Times New Roman", Times, serif' }}>santi&apos;s list</span>
             </Link>
             <Link href="/" className="text-black/70 dark:text-white/70 hover:underline whitespace-nowrap">
               Listings
@@ -61,8 +62,8 @@ export default function RootLayout({
         </header>
         <div className="border-b border-black/10 dark:border-white/15 bg-black/[.02] dark:bg-white/[.03]">
           <p className="mx-auto max-w-5xl px-4 py-2 text-xs text-black/50 dark:text-white/50">
-            Watches Craigslist for new apartment listings that match your saved searches, verifies the
-            neighborhood against real map data, and alerts you the moment one posts.
+            this app automatically crawls craigslist for apartments based on your preferences, organizes them,
+            and alerts you when new listings go up. pls don&apos;t abuse my data limits :)
           </p>
         </div>
         <main className="flex-1 mx-auto w-full max-w-5xl px-4 py-6">{children}</main>

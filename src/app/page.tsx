@@ -287,10 +287,13 @@ function ListingsFeedPage() {
   // Fixed pixel column widths only apply from sm: up — below that, rows
   // stack into a single-column card layout instead (see the header/row
   // className usage below), since fixed-width columns can't shrink to fit a
-  // phone screen without overlapping/illegible content.
+  // phone screen without overlapping/illegible content. Column order is
+  // Listing, Price, Train, Commute (if shown), Listed — matching the order
+  // the row/header elements are written in below, since that same order is
+  // what determines stacking order on mobile.
   const gridColsClass = commuteMode
-    ? "sm:grid-cols-[1fr_170px_130px_120px_100px]"
-    : "sm:grid-cols-[1fr_170px_120px_100px]";
+    ? "sm:grid-cols-[1fr_100px_170px_100px_120px]"
+    : "sm:grid-cols-[1fr_100px_170px_120px]";
 
   // Gradient ranges are computed over whatever's currently on screen (this
   // page of results), not the whole search — the full result set could span
@@ -565,22 +568,8 @@ function ListingsFeedPage() {
           </div>
           <button
             type="button"
-            onClick={() => handleHeaderSort("train")}
-            className="text-left hover:text-black dark:hover:text-white"
-          >
-            Train{sortIndicator(filters.sort === "distance_to_train")}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleHeaderSort("listed")}
-            className="text-right hover:text-black dark:hover:text-white"
-          >
-            Listed{sortIndicator(filters.sort === "newest")}
-          </button>
-          <button
-            type="button"
             onClick={() => handleHeaderSort("price")}
-            className="text-right hover:text-black dark:hover:text-white"
+            className="text-left hover:text-black dark:hover:text-white"
           >
             Price
             {sortIndicator(
@@ -588,16 +577,30 @@ function ListingsFeedPage() {
               filters.sort === "price_asc" ? "asc" : filters.sort === "price_desc" ? "desc" : undefined,
             )}
           </button>
+          <button
+            type="button"
+            onClick={() => handleHeaderSort("train")}
+            className="text-left hover:text-black dark:hover:text-white"
+          >
+            Train{sortIndicator(filters.sort === "distance_to_train")}
+          </button>
           {commuteMode && (
             <button
               type="button"
               onClick={() => handleHeaderSort("commute")}
-              className="text-right hover:text-black dark:hover:text-white"
+              className="text-left hover:text-black dark:hover:text-white"
             >
               Commute {commuteModeEmoji(commuteMode)}
               {sortIndicator(filters.sort === "commute")}
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => handleHeaderSort("listed")}
+            className="text-right hover:text-black dark:hover:text-white"
+          >
+            Listed{sortIndicator(filters.sort === "newest")}
+          </button>
         </div>
         <div className="flex flex-col divide-y divide-black/10 dark:divide-white/15">
           {data?.listings.map((listing) => (
@@ -629,6 +632,9 @@ function ListingsFeedPage() {
                   )}
                 </div>
               </div>
+              <div className="text-left shrink-0 font-semibold" style={gradientTextColor(listing.price, priceMin, priceMax)}>
+                {listing.price != null ? `$${listing.price.toLocaleString()}` : "—"}
+              </div>
               <div className="flex flex-col gap-1 text-xs text-black/60 dark:text-white/60">
                 {listing.nearestStation ? (
                   <>
@@ -653,6 +659,15 @@ function ListingsFeedPage() {
                   <span className="text-black/30 dark:text-white/30">—</span>
                 )}
               </div>
+              {commuteMode && (
+                <div
+                  className="text-left shrink-0 text-xs text-black/60 dark:text-white/60"
+                  style={gradientTextColor(listing.commute?.minutes, commuteMin, commuteMax)}
+                >
+                  <span className="sm:hidden">{commuteModeEmoji(commuteMode)} </span>
+                  {formatCommute(listing.commute)}
+                </div>
+              )}
               <div className="text-left sm:text-right shrink-0">
                 <div
                   className="text-sm text-black/70 dark:text-white/70"
@@ -662,21 +677,6 @@ function ListingsFeedPage() {
                 </div>
                 <div className="text-xs text-black/50 dark:text-white/50">{formatDate(listing.postedAt)}</div>
               </div>
-              <div
-                className="text-left sm:text-right shrink-0 font-semibold"
-                style={gradientTextColor(listing.price, priceMin, priceMax)}
-              >
-                {listing.price != null ? `$${listing.price.toLocaleString()}` : "—"}
-              </div>
-              {commuteMode && (
-                <div
-                  className="text-left sm:text-right shrink-0 text-xs text-black/60 dark:text-white/60"
-                  style={gradientTextColor(listing.commute?.minutes, commuteMin, commuteMax)}
-                >
-                  <span className="sm:hidden">{commuteModeEmoji(commuteMode)} </span>
-                  {formatCommute(listing.commute)}
-                </div>
-              )}
             </a>
           ))}
         </div>
