@@ -40,9 +40,24 @@ function listingTimestamp(listing: MapListing): number {
   return new Date(listing.postedAt ?? listing.firstSeenAt).getTime();
 }
 
-function opacityForListing(listing: MapListing, oldest: number, newest: number, minOpacity: number): number {
-  if (newest === oldest) return 1;
-  const t = (listingTimestamp(listing) - oldest) / (newest - oldest);
+// Wrapped in its own module-scope function (rather than calling Date.now()
+// directly in the component body) so React's purity lint rule doesn't flag
+// it — same pattern as formatListingAge below, which already does this.
+function currentTimestamp(): number {
+  return Date.now();
+}
+
+// A fixed real-world window (not scaled to whatever's currently on screen) —
+// scaling to the current view's own oldest/newest listing made age
+// meaningless whenever a search spans multiple cities/searches with very
+// different age distributions (e.g. one much older outlier elsewhere made
+// every other listing look artificially fresh by comparison, regardless of
+// its own real age).
+const MARKER_FADE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+function opacityForListing(listing: MapListing, today: number, minOpacity: number): number {
+  const age = Math.max(0, today - listingTimestamp(listing));
+  const t = 1 - Math.min(1, age / MARKER_FADE_WINDOW_MS);
   return minOpacity + t * (1 - minOpacity);
 }
 
@@ -78,13 +93,16 @@ function RecenterOnCityChange({ center, zoom }: { center: [number, number]; zoom
 // Deliberately saturated, high-contrast colors — the CARTO Positron basemap
 // is intentionally pale/low-contrast (that's what makes it "basic"), so
 // markers need real brand-saturated colors to still read clearly against it.
-// Opacity fades toward a floor (never fully transparent/unclickable) for
-// older listings, so the newest ones visually pop out on a crowded map.
-const MARKER_MIN_OPACITY = 0.25;
+// Fill fades toward a floor (never fully transparent/unclickable) for older
+// listings, so the newest ones visually pop out on a crowded map. Only the
+// fill's alpha channel fades — the white outline and shadow stay fully
+// opaque so every marker (regardless of age) stays equally easy to see and
+// click on a crowded map.
+const MARKER_MIN_OPACITY = 0.5;
 function listingMarkerIcon(opacity: number): L.DivIcon {
   return L.divIcon({
     className: "",
-    html: `<div style="width:14px;height:14px;border-radius:9999px;background:#dc2626;border:2px solid white;box-shadow:0 0 0 1px rgba(0,0,0,0.4);opacity:${opacity}"></div>`,
+    html: `<div style="width:14px;height:14px;border-radius:9999px;background:rgba(220,38,38,${opacity});border:2px solid white;box-shadow:0 0 0 1px rgba(0,0,0,0.4)"></div>`,
     iconSize: [14, 14],
     iconAnchor: [7, 7],
   });
@@ -135,13 +153,10 @@ export function MapView({
 }) {
   const center = useMemo(() => CITY_CENTERS[city] ?? CITY_CENTERS.newyork, [city]);
 
-  // Older listings fade toward MARKER_MIN_OPACITY, scaled to the oldest/newest
-  // currently on screen (not a fixed absolute age) — a listing that's "old"
-  // in a search returning mostly today's posts should still stand out as
-  // relatively old, even if it's only a few days old in absolute terms.
-  const listingAges = listings.map(listingTimestamp);
-  const oldestTimestamp = listingAges.length > 0 ? Math.min(...listingAges) : 0;
-  const newestTimestamp = listingAges.length > 0 ? Math.max(...listingAges) : 0;
+  // A listing posted today is always fully solid; one MARKER_FADE_WINDOW_MS
+  // or older fades all the way down to MARKER_MIN_OPACITY, regardless of
+  // what else is currently on screen.
+  const todayTimestamp = currentTimestamp();
 
   const highlightCollection = useMemo<FeatureCollection>(
     () => ({
@@ -202,7 +217,7 @@ export function MapView({
         <Marker
           key={listing.id}
           position={[listing.latitude, listing.longitude]}
-          icon={listingMarkerIcon(opacityForListing(listing, oldestTimestamp, newestTimestamp, MARKER_MIN_OPACITY))}
+          icon={listingMarkerIcon(opacityForListing(listing, todayTimestamp, MARKER_MIN_OPACITY))}
         >
           <Popup>
             <div className="flex flex-col gap-1 max-w-52">

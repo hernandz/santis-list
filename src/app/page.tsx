@@ -17,6 +17,8 @@ type Listing = {
   bathrooms: number | null;
   locationText: string | null;
   city: string;
+  latitude: number | null;
+  longitude: number | null;
   postedAt: string | null;
   firstSeenAt: string;
   matches: { watch: { id: string; name: string } }[];
@@ -523,7 +525,7 @@ function ListingsFeedPage() {
         </p>
       )}
 
-      {loading && <p className="text-sm text-black/50 dark:text-white/50">Loading…</p>}
+      {loading && !data && <p className="text-sm text-black/50 dark:text-white/50">Loading…</p>}
 
       {!loading && data && data.listings.length === 0 && (
         <p className="text-sm text-black/50 dark:text-white/50">
@@ -534,7 +536,16 @@ function ListingsFeedPage() {
 
       <div className="border border-black/10 dark:border-white/15 rounded-lg overflow-hidden">
         <div className={`grid ${gridColsClass} gap-4 px-4 py-2 text-xs font-medium text-black/50 dark:text-white/50 border-b border-black/10 dark:border-white/15`}>
-          <div>Listing</div>
+          <div className="flex items-center gap-2">
+            Listing
+            {loading && (
+              <span
+                className="inline-block w-3 h-3 border-2 border-black/40 dark:border-white/40 border-t-transparent rounded-full animate-spin"
+                role="status"
+                aria-label="Loading listings"
+              />
+            )}
+          </div>
           <button
             type="button"
             onClick={() => handleHeaderSort("train")}
@@ -591,6 +602,14 @@ function ListingsFeedPage() {
                   {listing.matches.length > 0
                     ? ` · matched: ${listing.matches.map((m) => m.watch.name).join(", ")}`
                     : ""}
+                  {(listing.latitude == null || listing.longitude == null) && (
+                    <span
+                      className="ml-1 text-amber-600 dark:text-amber-400"
+                      title="No location data for this listing — it won't appear on the map"
+                    >
+                      · not on map
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="flex flex-col gap-1 text-xs text-black/60 dark:text-white/60">

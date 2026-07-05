@@ -2,6 +2,7 @@ import Link from "next/link";
 import { prisma } from "@/server/db/prisma";
 import { DeleteWatchButton } from "./DeleteWatchButton";
 import { ForceCrawlButton } from "./ForceCrawlButton";
+import { PauseToggleButton } from "./PauseToggleButton";
 
 export const dynamic = "force-dynamic";
 
@@ -53,6 +54,7 @@ export default async function WatchesPage() {
               <Link href={`/watches/${watch.id}`} className="hover:underline">
                 Edit
               </Link>
+              <PauseToggleButton watchId={watch.id} isActive={watch.isActive} />
               <DeleteWatchButton watchId={watch.id} />
             </div>
           </div>
