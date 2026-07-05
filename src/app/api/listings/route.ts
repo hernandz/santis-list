@@ -111,6 +111,43 @@ function watchMatchesEnrichedListing(
   return true;
 }
 
+// A listing missing lat/lon can never be boundary-checked, so it only ever
+// matches a neighborhood-restricted search via the text fallback in
+// matchesNeighborhoods (boundaryNeighborhood is always null here, deliberately).
+// Bounded the same way the transit-aware path is — a huge "missing location"
+// pool is unlikely, but this avoids pulling an unbounded set into memory.
+const NOT_PLOTTED_CAP = 2000;
+
+async function countNotPlotted(
+  sqlConditionsWithoutGeo: Prisma.ListingWhereInput[],
+  adHocNeighborhoodNames: string[],
+  scopeWatches: WatchLike[] | null,
+): Promise<number> {
+  const whereMissingLocation: Prisma.ListingWhereInput = {
+    AND: [...sqlConditionsWithoutGeo, { OR: [{ latitude: null }, { longitude: null }] }],
+  };
+
+  const needsNeighborhoodCheck =
+    adHocNeighborhoodNames.length > 0 || (scopeWatches?.some((w) => w.neighborhoods.length > 0) ?? false);
+
+  if (!needsNeighborhoodCheck) {
+    return prisma.listing.count({ where: whereMissingLocation });
+  }
+
+  const candidates = await prisma.listing.findMany({ where: whereMissingLocation, take: NOT_PLOTTED_CAP });
+
+  return candidates.filter((listing) => {
+    if (adHocNeighborhoodNames.length > 0 && !matchesNeighborhoods(listing, null, adHocNeighborhoodNames)) {
+      return false;
+    }
+    if (scopeWatches != null) {
+      if (scopeWatches.length === 0) return false;
+      if (!scopeWatches.some((w) => watchMatchesEnrichedListing(w, listing, null))) return false;
+    }
+    return true;
+  }).length;
+}
+
 async function enrichListing<T extends Listing>(
   listing: T,
 ): Promise<
@@ -315,10 +352,11 @@ export async function GET(request: Request) {
     conditions.push(watch ? { AND: watchSqlConditions(watch) } : { id: "__none__" });
   }
 
-  // Kept separate from `where` so the map can report how many otherwise-
-  // matching listings simply have no location to plot (Craigslist doesn't
-  // always provide one) — computed before the geo requirement is added below.
-  const whereRegardlessOfLocation: Prisma.ListingWhereInput = conditions.length > 0 ? { AND: conditions } : {};
+  // A *copy* of conditions so far (city/price/bed-bath/scope, no neighborhood
+  // text yet) — `conditions` is a mutable array and gets the geo requirement
+  // pushed onto it next, so capturing a reference here (rather than a copy)
+  // would silently pick that up too and defeat the whole point of this list.
+  const sqlConditionsWithoutGeo = [...conditions];
 
   if (forMap) conditions.push({ latitude: { not: null }, longitude: { not: null } });
   const where: Prisma.ListingWhereInput = conditions.length > 0 ? { AND: conditions } : {};
@@ -348,7 +386,7 @@ export async function GET(request: Request) {
     const skip = forMap ? 0 : (page - 1) * PAGE_SIZE;
     const take = forMap ? MAP_LIMIT : PAGE_SIZE;
 
-    const [total, listings, totalRegardlessOfLocation] = await Promise.all([
+    const [total, listings, notPlotted] = await Promise.all([
       prisma.listing.count({ where }),
       prisma.listing.findMany({
         where,
@@ -357,7 +395,7 @@ export async function GET(request: Request) {
         take,
         include: { matches: { include: { watch: { select: { id: true, name: true } } } } },
       }),
-      forMap ? prisma.listing.count({ where: whereRegardlessOfLocation }) : Promise.resolve(null),
+      forMap ? countNotPlotted(sqlConditionsWithoutGeo, adHocNeighborhoodNames, scopeWatches) : Promise.resolve(null),
     ]);
 
     const listingsEnriched = await Promise.all(listings.map(enrichListing));
@@ -371,7 +409,7 @@ export async function GET(request: Request) {
         pageSize: forMap ? MAP_LIMIT : PAGE_SIZE,
         total,
         totalPages: forMap ? 1 : Math.max(1, Math.ceil(total / PAGE_SIZE)),
-        ...(forMap ? { totalRegardlessOfLocation, notPlotted: (totalRegardlessOfLocation ?? total) - total } : {}),
+        ...(forMap ? { totalRegardlessOfLocation: total + (notPlotted ?? 0), notPlotted: notPlotted ?? 0 } : {}),
       },
       { headers: { "Cache-Control": "no-store" } },
     );
@@ -384,7 +422,7 @@ export async function GET(request: Request) {
     sortingByCommute &&
     (commuteMode === "car" || commuteMode === "bike" || (commuteMode === "transit" && usesGoogleTransit()));
   const candidateCap = usesExternalCommuteApi ? COMMUTE_EXTERNAL_API_CAP : TRANSIT_SORT_CAP;
-  const [whereTotal, candidates, totalRegardlessOfLocation] = await Promise.all([
+  const [whereTotal, candidates, notPlotted] = await Promise.all([
     prisma.listing.count({ where }),
     prisma.listing.findMany({
       where,
@@ -392,7 +430,7 @@ export async function GET(request: Request) {
       take: candidateCap,
       include: { matches: { include: { watch: { select: { id: true, name: true } } } } },
     }),
-    forMap ? prisma.listing.count({ where: whereRegardlessOfLocation }) : Promise.resolve(null),
+    forMap ? countNotPlotted(sqlConditionsWithoutGeo, adHocNeighborhoodNames, scopeWatches) : Promise.resolve(null),
   ]);
   const truncated = whereTotal > candidates.length;
 
@@ -457,9 +495,7 @@ export async function GET(request: Request) {
       total,
       totalPages: forMap ? 1 : Math.max(1, Math.ceil(total / PAGE_SIZE)),
       truncated,
-      ...(forMap
-        ? { totalRegardlessOfLocation, notPlotted: Math.max(0, (totalRegardlessOfLocation ?? total) - total) }
-        : {}),
+      ...(forMap ? { totalRegardlessOfLocation: total + (notPlotted ?? 0), notPlotted: notPlotted ?? 0 } : {}),
     },
     { headers: { "Cache-Control": "no-store" } },
   );
