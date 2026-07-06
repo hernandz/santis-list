@@ -1,9 +1,10 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { VISIBLE_CITIES } from "@/lib/craigslistCities";
+import { defaultCommuteModeForCity, commuteModeEmoji } from "@/lib/commuteMode";
 import { TrainLineBadge, type TransitLine } from "@/components/TrainLineBadge";
 
 type NearestStationInfo = { name: string; lines: TransitLine[]; distanceMiles: number; walkingMinutes: number };
@@ -50,16 +51,6 @@ const emptyFilters = {
   sort: "newest",
 };
 
-// Sensible default per city's actual transit character — LA is far more
-// car-dependent than NYC/SF, which both have real heavy-rail systems.
-function defaultCommuteModeForCity(city: string): "car" | "transit" {
-  return city === "losangeles" ? "car" : "transit";
-}
-
-function commuteModeEmoji(mode: "" | "car" | "bike" | "transit"): string {
-  return mode === "car" ? "🚗" : mode === "bike" ? "🚴" : "🚆";
-}
-
 type WatchSummary = { id: string; name: string; city: string };
 
 // The "saved search scope" (all watches / a specific watch / none) is a
@@ -68,6 +59,7 @@ type WatchSummary = { id: string; name: string; city: string };
 // with a further ad-hoc max price.
 const ALL_WATCHES_SCOPE = "__all__";
 const SCOPE_STORAGE_KEY = "feed:scope";
+const VISITED_STORAGE_KEY = "feed:visited";
 
 function formatDate(value: string | null) {
   if (!value) return "—";
@@ -140,7 +132,18 @@ function ListingsFeedPage() {
   // sparse enough relative to the city's size that it's a much less
   // universally-relevant filter there than in NYC/SF.
   const [trainLinesExpanded, setTrainLinesExpanded] = useState(emptyFilters.city !== "losangeles");
+  // Same reasoning for the results column itself — LA is car-dependent
+  // enough that distance-to-train isn't a universally useful thing to show
+  // by default, though it's still one click away.
+  const [showTrainColumn, setShowTrainColumn] = useState(emptyFilters.city !== "losangeles");
   const [loading, setLoading] = useState(true);
+  // Which listings you've already clicked through to on Craigslist, greyed
+  // out afterward so a long list of familiar results is easier to scan for
+  // what's actually new. Persisted to localStorage (not just component
+  // state) so it survives a page reload/revisit, same as the saved-search
+  // scope above — starts empty here (SSR has no localStorage) and hydrates
+  // from it on mount.
+  const [visitedIds, setVisitedIds] = useState<Set<string>>(new Set());
 
   const [watches, setWatches] = useState<WatchSummary[]>([]);
   // Defaults to "all saved searches" — results automatically reflect every
@@ -158,6 +161,28 @@ function ListingsFeedPage() {
       .catch(() => setWatches([]))
       .finally(() => setWatchesLoaded(true));
   }, []);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(VISITED_STORAGE_KEY);
+      // Reading localStorage (an external system unavailable during SSR) is
+      // exactly the documented exception to "don't setState in an effect".
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (stored) setVisitedIds(new Set(JSON.parse(stored)));
+    } catch {
+      // corrupt/unexpected localStorage contents — just start empty rather than crash
+    }
+  }, []);
+
+  function markVisited(id: string) {
+    setVisitedIds((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      localStorage.setItem(VISITED_STORAGE_KEY, JSON.stringify(Array.from(next)));
+      return next;
+    });
+  }
 
   // Train lines are city-specific (NYC letters, BART colors, LA Metro names),
   // so re-fetch whenever the city filter changes.
@@ -204,7 +229,17 @@ function ListingsFeedPage() {
     function sync() {
       const remembered = scopeFromUrl ?? localStorage.getItem(SCOPE_STORAGE_KEY) ?? ALL_WATCHES_SCOPE;
       setScope(remembered);
-      router.replace(remembered === "" ? "/" : `/?scope=${remembered}`, { scroll: false });
+      const targetPath = remembered === "" ? "/" : `/?scope=${remembered}`;
+      // Only replace when the URL would actually change — calling
+      // router.replace unconditionally on every mount/focus (even when
+      // already correct) re-triggers this Suspense-wrapped page's mount
+      // cycle, which re-runs this very effect, which replaces again... an
+      // infinite loop that briefly looked like a scope/watches dependency
+      // issue but was really just this repeatedly "changing" the URL to the
+      // same value it already was.
+      if (window.location.pathname + window.location.search !== targetPath) {
+        router.replace(targetPath, { scroll: false });
+      }
     }
     sync();
     window.addEventListener("focus", sync);
@@ -288,12 +323,18 @@ function ListingsFeedPage() {
   // stack into a single-column card layout instead (see the header/row
   // className usage below), since fixed-width columns can't shrink to fit a
   // phone screen without overlapping/illegible content. Column order is
-  // Listing, Price, Train, Commute (if shown), Listed — matching the order
-  // the row/header elements are written in below, since that same order is
-  // what determines stacking order on mobile.
-  const gridColsClass = commuteMode
-    ? "sm:grid-cols-[1fr_100px_170px_100px_120px]"
-    : "sm:grid-cols-[1fr_100px_170px_120px]";
+  // Listing, Price, Train (if shown), Commute (if shown), Listed — matching
+  // the order the row/header elements are written in below, since that same
+  // order is what determines stacking order on mobile. Written as complete
+  // literal class strings (not built by concatenating fragments) so
+  // Tailwind's JIT scanner can actually find them.
+  const gridColsClass = showTrainColumn
+    ? commuteMode
+      ? "sm:grid-cols-[1fr_100px_170px_100px_120px]"
+      : "sm:grid-cols-[1fr_100px_170px_120px]"
+    : commuteMode
+      ? "sm:grid-cols-[1fr_100px_100px_120px]"
+      : "sm:grid-cols-[1fr_100px_120px]";
 
   // Gradient ranges are computed over whatever's currently on screen (this
   // page of results), not the whole search — the full result set could span
@@ -302,32 +343,52 @@ function ListingsFeedPage() {
   const [priceMin, priceMax] = numericRange(data?.listings.map((l) => l.price) ?? []);
   const [commuteMin, commuteMax] = numericRange(data?.listings.map((l) => l.commute?.minutes) ?? []);
 
+  // Keeps the ad-hoc City filter (and the city-derived defaults) in sync
+  // with whatever the effective scope actually is. This can't just live
+  // inside handleSelectScope: scope is also restored from localStorage/the
+  // URL on mount (see the sync() effect above), and at that moment `watches`
+  // may not have finished loading yet — a plain inline update at click time
+  // would miss that case entirely, which is exactly how a restored
+  // LA-specific search could sit next to a leftover "New York City" ad-hoc
+  // filter and silently return zero results. Re-running off [scope, watches]
+  // covers both the manual-switch case and the mount/restore race — a
+  // legitimate "adjust state when derived-from-props value changes" effect
+  // (https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes).
+  const lastSyncedScopeRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (scope === "") return; // browse-everything: leave ad-hoc filters exactly as the user set them
+    if (scope === ALL_WATCHES_SCOPE) {
+      // Only apply once per distinct scope value — this effect's own
+      // setFilters call changes `filters`, which isn't a dependency here, so
+      // that alone can't cause a loop, but re-applying unconditionally on
+      // every [scope, watches] change (e.g. once watches finishes loading)
+      // is still unnecessary work. Guarding on a ref sidesteps it entirely.
+      if (lastSyncedScopeRef.current === scope) return;
+      lastSyncedScopeRef.current = scope;
+      // "All saved searches" can span multiple watches across different
+      // cities — a leftover ad-hoc City filter would silently AND against
+      // every watch's own city condition and can zero out the results
+      // entirely if it doesn't match any active watch's city.
+      setFilters((prev) => (prev.city === "" && prev.trainLines === "" ? prev : { ...prev, city: "", trainLines: "" }));
+      return;
+    }
+    const watch = watches.find((w) => w.id === scope);
+    if (!watch) return; // watches hasn't loaded yet, or scope refers to a deleted/unknown watch
+    if (lastSyncedScopeRef.current === scope) return;
+    lastSyncedScopeRef.current = scope;
+    setFilters((prev) =>
+      prev.city === watch.city && prev.trainLines === "" ? prev : { ...prev, city: watch.city, trainLines: "" },
+    );
+    setCommuteMode(defaultCommuteModeForCity(watch.city));
+    setTrainLinesExpanded(watch.city !== "losangeles");
+    setShowTrainColumn(watch.city !== "losangeles");
+  }, [scope, watches]);
+
   function handleSelectScope(next: string) {
     setPage(1);
     setScope(next);
     localStorage.setItem(SCOPE_STORAGE_KEY, next);
     router.replace(next === "" ? "/" : `/?scope=${next}`, { scroll: false });
-
-    // A specific watch already restricts to its own city server-side — if the
-    // ad-hoc City filter here still says something else, the two conditions
-    // contradict each other (city=A AND city=B) and silently return zero
-    // results. Auto-set it to match so switching searches doesn't look broken.
-    if (next !== ALL_WATCHES_SCOPE && next) {
-      const watch = watches.find((w) => w.id === next);
-      if (watch) {
-        setFilters((prev) => ({ ...prev, city: watch.city, trainLines: "" }));
-        setCommuteMode(defaultCommuteModeForCity(watch.city));
-        setTrainLinesExpanded(watch.city !== "losangeles");
-      }
-    } else if (next === ALL_WATCHES_SCOPE) {
-      // "All saved searches" can span multiple watches across different
-      // cities — a leftover ad-hoc City filter from browsing (or from a
-      // previously selected specific watch) would silently AND against every
-      // watch's own city condition and can zero out the results entirely if
-      // it doesn't match any active watch's city. Reset it so switching back
-      // to this scope always shows everything it should.
-      setFilters((prev) => ({ ...prev, city: "", trainLines: "" }));
-    }
   }
 
   return (
@@ -393,6 +454,7 @@ function ListingsFeedPage() {
               updateFilter("city", e.target.value);
               if (e.target.value) setCommuteMode(defaultCommuteModeForCity(e.target.value));
               setTrainLinesExpanded(e.target.value !== "losangeles");
+              setShowTrainColumn(e.target.value !== "losangeles");
             }}
           >
             <option value="">All cities</option>
@@ -497,19 +559,28 @@ function ListingsFeedPage() {
 
       {filters.city && (
         <div className="flex flex-col gap-1.5 border border-black/10 dark:border-white/15 rounded-lg p-4">
-          <button
-            type="button"
-            onClick={() => setTrainLinesExpanded((prev) => !prev)}
-            className="text-xs text-left flex items-center gap-1"
-          >
-            <span aria-hidden>{trainLinesExpanded ? "▾" : "▸"}</span>
-            Train lines (select any number — matches listings near any of them)
-            {!trainLinesExpanded && filters.trainLines && (
-              <span className="text-black/50 dark:text-white/50">
-                ({filters.trainLines.split(",").filter(Boolean).length} selected)
-              </span>
-            )}
-          </button>
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setTrainLinesExpanded((prev) => !prev)}
+              className="text-xs text-left flex items-center gap-1"
+            >
+              <span aria-hidden>{trainLinesExpanded ? "▾" : "▸"}</span>
+              Train lines (select any number — matches listings near any of them)
+              {!trainLinesExpanded && filters.trainLines && (
+                <span className="text-black/50 dark:text-white/50">
+                  ({filters.trainLines.split(",").filter(Boolean).length} selected)
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowTrainColumn((prev) => !prev)}
+              className="text-xs shrink-0 border rounded px-2 py-1 border-black/15 dark:border-white/20"
+            >
+              {showTrainColumn ? "Hide" : "Show"} train column
+            </button>
+          </div>
           {trainLinesExpanded && (
             <div className="flex flex-wrap gap-2">
               {trainLines.length === 0 && (
@@ -577,13 +648,15 @@ function ListingsFeedPage() {
               filters.sort === "price_asc" ? "asc" : filters.sort === "price_desc" ? "desc" : undefined,
             )}
           </button>
-          <button
-            type="button"
-            onClick={() => handleHeaderSort("train")}
-            className="text-left hover:text-black dark:hover:text-white"
-          >
-            Train{sortIndicator(filters.sort === "distance_to_train")}
-          </button>
+          {showTrainColumn && (
+            <button
+              type="button"
+              onClick={() => handleHeaderSort("train")}
+              className="text-left hover:text-black dark:hover:text-white"
+            >
+              Train{sortIndicator(filters.sort === "distance_to_train")}
+            </button>
+          )}
           {commuteMode && (
             <button
               type="button"
@@ -609,7 +682,8 @@ function ListingsFeedPage() {
               href={listing.url}
               target="_blank"
               rel="noreferrer"
-              className={`flex flex-col gap-2 sm:grid ${gridColsClass} sm:items-center sm:gap-4 px-4 py-3 hover:bg-black/[.03] dark:hover:bg-white/[.05]`}
+              onClick={() => markVisited(listing.id)}
+              className={`flex flex-col gap-2 sm:grid ${gridColsClass} sm:items-center sm:gap-4 px-4 py-3 hover:bg-black/[.03] dark:hover:bg-white/[.05]${visitedIds.has(listing.id) ? " opacity-45" : ""}`}
             >
               <div className="min-w-0">
                 <div className="font-medium sm:truncate">{listing.title}</div>
@@ -635,30 +709,32 @@ function ListingsFeedPage() {
               <div className="text-left shrink-0 font-semibold" style={gradientTextColor(listing.price, priceMin, priceMax)}>
                 {listing.price != null ? `$${listing.price.toLocaleString()}` : "—"}
               </div>
-              <div className="flex flex-col gap-1 text-xs text-black/60 dark:text-white/60">
-                {listing.nearestStation ? (
-                  <>
-                    <div className="flex items-center gap-1.5">
-                      <span style={gradientTextColor(listing.nearestStation.walkingMinutes, WALK_MIN_MINUTES, WALK_MAX_MINUTES)}>
-                        {listing.nearestStation.walkingMinutes} min to {listing.nearestStation.name}
-                      </span>
-                      {listing.nearestStation.lines.map((line) => (
-                        <TrainLineBadge key={line.name} line={line} />
-                      ))}
-                    </div>
-                    {listing.nextStation && (
-                      <div className="flex items-center gap-1.5 text-black/50 dark:text-white/50">
-                        <span>also {listing.nextStation.walkingMinutes} min to {listing.nextStation.name}</span>
-                        {listing.nextStation.lines.map((line) => (
+              {showTrainColumn && (
+                <div className="flex flex-col gap-1 text-xs text-black/60 dark:text-white/60">
+                  {listing.nearestStation ? (
+                    <>
+                      <div className="flex items-center gap-1.5">
+                        <span style={gradientTextColor(listing.nearestStation.walkingMinutes, WALK_MIN_MINUTES, WALK_MAX_MINUTES)}>
+                          {listing.nearestStation.walkingMinutes} min to {listing.nearestStation.name}
+                        </span>
+                        {listing.nearestStation.lines.map((line) => (
                           <TrainLineBadge key={line.name} line={line} />
                         ))}
                       </div>
-                    )}
-                  </>
-                ) : (
-                  <span className="text-black/30 dark:text-white/30">—</span>
-                )}
-              </div>
+                      {listing.nextStation && (
+                        <div className="flex items-center gap-1.5 text-black/50 dark:text-white/50">
+                          <span>also {listing.nextStation.walkingMinutes} min to {listing.nextStation.name}</span>
+                          {listing.nextStation.lines.map((line) => (
+                            <TrainLineBadge key={line.name} line={line} />
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-black/30 dark:text-white/30">—</span>
+                  )}
+                </div>
+              )}
               {commuteMode && (
                 <div
                   className="text-left shrink-0 text-xs text-black/60 dark:text-white/60"

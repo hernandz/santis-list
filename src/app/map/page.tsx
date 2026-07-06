@@ -57,6 +57,27 @@ export default function MapPage() {
       .catch(() => setWatches([]));
   }, []);
 
+  // Default to whichever city actually has the most crawled listings, rather
+  // than always opening on a hardcoded one that might have nothing crawled
+  // for it yet. Runs once on mount, before there's been any chance for the
+  // user to have already picked a different city themselves.
+  useEffect(() => {
+    fetch("/api/listings/city-counts", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((body: { counts?: Record<string, number> }) => {
+        const counts = body.counts ?? {};
+        const busiest = VISIBLE_CITIES.reduce(
+          (best, c) => ((counts[c.value] ?? 0) > (counts[best.value] ?? 0) ? c : best),
+          VISIBLE_CITIES[0],
+        );
+        if ((counts[busiest.value] ?? 0) > 0) {
+          setCity(busiest.value);
+          setShowStations(busiest.value !== "losangeles");
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/craigslist/stations?city=${encodeURIComponent(city)}`, { cache: "no-store" })
