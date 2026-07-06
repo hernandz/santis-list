@@ -28,6 +28,8 @@ type Listing = {
   boundaryNeighborhood: string | null;
   commute?: { minutes: number; distanceMiles: number; approximate: boolean } | null;
   medianRent: number | null;
+  minRent: number | null;
+  maxRent: number | null;
 };
 
 type ListingsResponse = {
@@ -109,20 +111,32 @@ function numericRange(values: (number | null | undefined)[]): [number, number] {
   return [Math.min(...nums), Math.max(...nums)];
 }
 
-// Yellow at the median, trending green below it and red above — unlike
-// gradientTextColor above (relative to whatever happens to be on screen),
-// this is relative to a real external reference: the server-computed median
-// rent for this exact neighborhood + bed/bath combo (see medianRent on
-// Listing). No color at all when there's no median to compare against
-// (missing verified neighborhood or bed/bath count) rather than falling back
-// to a page-relative gradient, which would silently change what the color
-// means listing to listing.
-const MEDIAN_COLOR_BAND = 0.3; // ±30% of median reaches full green/red
-function medianRelativeColor(price: number | null, medianRent: number | null): React.CSSProperties {
-  if (price == null || medianRent == null || medianRent === 0) return {};
-  const ratio = price / medianRent;
-  const t = Math.min(1, Math.max(-1, (ratio - 1) / MEDIAN_COLOR_BAND));
-  // t=0 (at median) -> 60° yellow; t=-1 (well below) -> 120° green; t=1 (well above) -> 0° red.
+// Yellow at the median, green at the real minimum for this neighborhood +
+// bedroom count, red at the real maximum — unlike gradientTextColor above
+// (relative to whatever happens to be on screen), this is relative to a real
+// external reference (see medianRent/minRent/maxRent on Listing). The two
+// halves scale independently (min-to-median vs median-to-max) since that
+// spread is rarely symmetric — a $200-below-median listing and a
+// $200-above-median one shouldn't necessarily look equally saturated if one
+// side of the range is much wider than the other. No color at all when
+// there's no verified neighborhood/bedroom count to compare against, rather
+// than falling back to a page-relative gradient, which would silently change
+// what the color means listing to listing.
+function medianRelativeColor(
+  price: number | null,
+  medianRent: number | null,
+  minRent: number | null,
+  maxRent: number | null,
+): React.CSSProperties {
+  if (price == null || medianRent == null || minRent == null || maxRent == null) return {};
+  let t: number;
+  if (price <= medianRent) {
+    t = medianRent === minRent ? 0 : (price - medianRent) / (medianRent - minRent);
+  } else {
+    t = maxRent === medianRent ? 0 : (price - medianRent) / (maxRent - medianRent);
+  }
+  t = Math.min(1, Math.max(-1, t));
+  // t=0 (at median) -> 60° yellow; t=-1 (at min) -> 120° green; t=1 (at max) -> 0° red.
   return { color: hueColor(60 - t * 60) };
 }
 
@@ -767,10 +781,10 @@ function ListingsFeedPage() {
                 className="text-left shrink-0 font-semibold"
                 title={
                   listing.medianRent != null
-                    ? `Median for ${listing.bedrooms ?? "?"}bd in ${listing.boundaryNeighborhood}: $${Math.round(listing.medianRent).toLocaleString()}`
+                    ? `${listing.bedrooms ?? "?"}bd in ${listing.boundaryNeighborhood}: $${Math.round(listing.minRent!).toLocaleString()} – $${Math.round(listing.maxRent!).toLocaleString()}, median $${Math.round(listing.medianRent).toLocaleString()}`
                     : undefined
                 }
-                style={medianRelativeColor(listing.price, listing.medianRent)}
+                style={medianRelativeColor(listing.price, listing.medianRent, listing.minRent, listing.maxRent)}
               >
                 {listing.price != null ? `$${listing.price.toLocaleString()}` : "—"}
               </div>
