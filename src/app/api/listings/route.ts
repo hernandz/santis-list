@@ -8,6 +8,8 @@ import {
   getBikeCommutesBatch,
   getTransitCommute,
   usesGoogleTransit,
+  mapWithConcurrency,
+  COMMUTE_REQUEST_CONCURRENCY,
   type CommuteEstimate,
 } from "@/server/geo/commute";
 
@@ -201,8 +203,8 @@ async function attachCommute<T extends Listing>(
   // means a real paid Google lookup per listing — the free heuristic
   // fallback has no reason to limit how many it covers.
   const transitBatch = usesGoogleTransit() ? withGeo.slice(0, COMMUTE_EXTERNAL_API_CAP) : withGeo;
-  const commutes = await Promise.all(
-    transitBatch.map((l) => getTransitCommute(l.city, { latitude: l.latitude!, longitude: l.longitude! }, work)),
+  const commutes = await mapWithConcurrency(transitBatch, COMMUTE_REQUEST_CONCURRENCY, (l) =>
+    getTransitCommute(l.city, { latitude: l.latitude!, longitude: l.longitude! }, work),
   );
   const byId = new Map(transitBatch.map((l, i) => [l.id, commutes[i]]));
   return listings.map((l) => ({ ...l, commute: byId.get(l.id) ?? null }));
@@ -234,8 +236,8 @@ async function attachAllCommutes<T extends Listing>(
       bikeBatch.map((l) => ({ latitude: l.latitude!, longitude: l.longitude! })),
       work,
     ),
-    Promise.all(
-      transitBatch.map((l) => getTransitCommute(l.city, { latitude: l.latitude!, longitude: l.longitude! }, work)),
+    mapWithConcurrency(transitBatch, COMMUTE_REQUEST_CONCURRENCY, (l) =>
+      getTransitCommute(l.city, { latitude: l.latitude!, longitude: l.longitude! }, work),
     ),
   ]);
 

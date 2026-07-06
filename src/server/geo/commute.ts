@@ -52,6 +52,32 @@ function hasGoogleMapsKey(): boolean {
   return Boolean(process.env.GOOGLE_MAPS_API_KEY);
 }
 
+// Directions has no multi-origin batch endpoint (unlike OSRM's table
+// service), so a page of N listings means N independent HTTP requests —
+// firing all of them at once via a bare Promise.all caused a real production
+// OOM crash (up to COMMUTE_EXTERNAL_API_CAP=300 concurrent open connections
+// per mode, and the map's "both" mode does car+bike+transit at once, so up
+// to ~900 simultaneous requests from one page load). Capped to a small,
+// fixed number in flight at a time instead.
+export const COMMUTE_REQUEST_CONCURRENCY = 20;
+
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const i = nextIndex++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 // Real routing (actual roads/turns/one-ways, not a straight-line estimate)
 // via the Directions API. Shared by driving, bicycling, and transit modes —
 // same endpoint, just a different `mode` param. Used in preference to the
@@ -90,21 +116,16 @@ async function getGoogleDirectionsCommute(
   }
 }
 
-// Each point is looked up independently (Directions has no multi-origin
-// batch endpoint the way OSRM's table service does), but the caller-side
-// caps (COMMUTE_EXTERNAL_API_CAP in api/listings/route.ts) already treat
-// car/bike as real per-request external calls regardless of provider, so
-// this doesn't change how many requests a given page/map load can trigger.
 export function getCarCommutesBatch(from: Point[], to: Point): Promise<(CommuteEstimate | null)[]> {
   if (hasGoogleMapsKey()) {
-    return Promise.all(from.map((p) => getGoogleDirectionsCommute(p, to, "driving")));
+    return mapWithConcurrency(from, COMMUTE_REQUEST_CONCURRENCY, (p) => getGoogleDirectionsCommute(p, to, "driving"));
   }
   return getOsrmCommutesBatch("https://router.project-osrm.org", from, to);
 }
 
 export function getBikeCommutesBatch(from: Point[], to: Point): Promise<(CommuteEstimate | null)[]> {
   if (hasGoogleMapsKey()) {
-    return Promise.all(from.map((p) => getGoogleDirectionsCommute(p, to, "bicycling")));
+    return mapWithConcurrency(from, COMMUTE_REQUEST_CONCURRENCY, (p) => getGoogleDirectionsCommute(p, to, "bicycling"));
   }
   return getOsrmCommutesBatch("https://routing.openstreetmap.de/routed-bike", from, to);
 }

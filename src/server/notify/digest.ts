@@ -2,6 +2,7 @@ import { prisma } from "@/server/db/prisma";
 import { emailChannel } from "./email";
 import type { NotificationListingPayload } from "./types";
 import { getNotificationExtras, type WorkLocation } from "./commuteEnrichment";
+import { mapWithConcurrency, COMMUTE_REQUEST_CONCURRENCY } from "@/server/geo/commute";
 import { buildPauseUrl } from "@/lib/pauseToken";
 
 async function flushDigest(frequency: "HOURLY" | "DAILY") {
@@ -29,8 +30,10 @@ async function flushDigest(frequency: "HOURLY" | "DAILY") {
   for (const watch of watches) {
     if (watch.matches.length === 0) continue;
 
-    const listings: NotificationListingPayload[] = await Promise.all(
-      watch.matches.map(async (m) => {
+    const listings: NotificationListingPayload[] = await mapWithConcurrency(
+      watch.matches,
+      COMMUTE_REQUEST_CONCURRENCY,
+      async (m) => {
         const extras = await getNotificationExtras(m.listing, work);
         return {
           title: m.listing.title,
@@ -42,7 +45,7 @@ async function flushDigest(frequency: "HOURLY" | "DAILY") {
           nearestStation: extras.nearestStation,
           commute: extras.commute,
         };
-      }),
+      },
     );
 
     const notification = await prisma.notification.create({
