@@ -5,6 +5,8 @@ import type { NotificationListingPayload } from "@/server/notify/types";
 import { getNotificationExtras, type WorkLocation } from "@/server/notify/commuteEnrichment";
 import { buildPauseUrl } from "@/lib/pauseToken";
 import { getNeighborhoodForPoint } from "@/server/geo/neighborhoodBoundaries";
+import { SUPPORTED_CITIES } from "@/lib/craigslistCities";
+import { getCraigslistAreas } from "./craigslistAreas";
 import { craigslistSource } from "./sources/craigslist";
 import type { ListingSource, RawListing } from "./sources/types";
 
@@ -107,6 +109,7 @@ async function searchAllSubareas(source: ListingSource, watch: Watch, cache: Sea
 }
 
 let inProgress = false;
+let fullCrawlInProgress = false;
 let lastResult: { summary: CrawlCycleSummary; finishedAt: Date; failed: boolean; error?: string } | null = null;
 let progress: { total: number; done: number; currentWatchName: string | null } | null = null;
 
@@ -123,7 +126,10 @@ export function getCrawlProgress() {
 }
 
 export async function runCrawlCycle(): Promise<CrawlCycleSummary> {
-  if (inProgress) {
+  // Also blocked by a full-city crawl — both hit Craigslist and upsert the
+  // same Listing rows by externalId, so letting them overlap risks a
+  // duplicate-create race for the same brand-new listing.
+  if (inProgress || fullCrawlInProgress) {
     throw new Error("A crawl cycle is already in progress");
   }
   inProgress = true;
@@ -191,23 +197,15 @@ async function runCrawlCycleUnguarded(): Promise<CrawlCycleSummary> {
   return summary;
 }
 
-async function processWatch(
-  watch: Watch,
-  summary: CrawlCycleSummary,
-  searchCache: SearchCache,
-  work: WorkLocation | null,
-  useGoogle: boolean,
-  alertEmail: string | null,
-): Promise<void> {
-  const source = sources.CRAIGSLIST;
-  // Search by subarea (if set) or the whole city, then rely on
-  // passesNeighborhoodBoundary (real polygon geometry) to attribute listings
-  // to neighborhoods, rather than Craigslist's own query= text search — that
-  // breaks for official boundary names real posters never write, e.g.
-  // "Bushwick (East)"/"(West)".
-  const rawListings = await searchAllSubareas(source, watch, searchCache);
-  summary.listingsSeen += rawListings.length;
-
+// Upserts raw search results into Listing rows and enriches brand-new (or
+// previously-failed) ones with detail-page data — the part of crawling that
+// has nothing to do with any particular watch's match criteria, shared by
+// per-watch crawling and the full-city backfill crawl below.
+async function resolveListings(
+  source: ListingSource,
+  rawListings: RawListing[],
+  counters: { newListings: number },
+): Promise<Listing[]> {
   // One batched lookup instead of one findUnique per raw listing — with a
   // few hundred results per search this turns hundreds of sequential
   // round-trips into a single query (benchmarked: ~600 sequential
@@ -234,7 +232,7 @@ async function processWatch(
           city: raw.city,
         },
       });
-      summary.newListings += 1;
+      counters.newListings += 1;
     }
 
     // Retry detail enrichment for brand-new listings, and for existing ones
@@ -278,6 +276,27 @@ async function processWatch(
 
     resolvedListings.push(listing!);
   }
+
+  return resolvedListings;
+}
+
+async function processWatch(
+  watch: Watch,
+  summary: CrawlCycleSummary,
+  searchCache: SearchCache,
+  work: WorkLocation | null,
+  useGoogle: boolean,
+  alertEmail: string | null,
+): Promise<void> {
+  const source = sources.CRAIGSLIST;
+  // Search by subarea (if set) or the whole city, then rely on
+  // passesNeighborhoodBoundary (real polygon geometry) to attribute listings
+  // to neighborhoods, rather than Craigslist's own query= text search — that
+  // breaks for official boundary names real posters never write, e.g.
+  // "Bushwick (East)"/"(West)".
+  const rawListings = await searchAllSubareas(source, watch, searchCache);
+  summary.listingsSeen += rawListings.length;
+  const resolvedListings = await resolveListings(source, rawListings, summary);
 
   const candidates: Listing[] = [];
   for (const listing of resolvedListings) {
@@ -369,4 +388,81 @@ async function processWatch(
       console.error(`Failed to send immediate notification for watch ${watch.id}:`, err);
     }
   }
+}
+
+export type FullCrawlSummary = { listingsSeen: number; newListings: number };
+
+let lastFullCrawlResult: { summary: FullCrawlSummary; finishedAt: Date; failed: boolean; error?: string } | null =
+  null;
+
+export function isFullCrawlInProgress(): boolean {
+  return fullCrawlInProgress;
+}
+
+export function getLastFullCrawlResult() {
+  return lastFullCrawlResult;
+}
+
+// Backfills every listing across the whole of each supported city/metro,
+// independent of any saved search's price/bed/bath/neighborhood filters —
+// purely to keep the Listing table broadly populated for browsing and the
+// Rent Map, which are otherwise limited to whatever active watches happen to
+// cover. No watch-matching or notifications here at all; this only
+// discovers, dedups, and enriches listings the exact same way processWatch
+// does. Meant to run weekly, off-peak (see scheduler.ts) — unlike the
+// per-watch crawl, a citywide search with no price filter and no per-watch
+// narrowing means detail-page fetches (the expensive, rate-limited part) for
+// every new listing in the whole metro, not just ones matching an active
+// search. Neighborhood rent data (the reason this exists) doesn't shift day
+// to day, so it doesn't need to run any more often than that.
+export async function runFullCityCrawl(): Promise<FullCrawlSummary> {
+  if (inProgress || fullCrawlInProgress) {
+    throw new Error("A crawl cycle is already in progress");
+  }
+  fullCrawlInProgress = true;
+  try {
+    const summary = await runFullCityCrawlUnguarded();
+    lastFullCrawlResult = { summary, finishedAt: new Date(), failed: false };
+    return summary;
+  } catch (err) {
+    lastFullCrawlResult = {
+      summary: { listingsSeen: 0, newListings: 0 },
+      finishedAt: new Date(),
+      failed: true,
+      error: err instanceof Error ? err.message : String(err),
+    };
+    throw err;
+  } finally {
+    fullCrawlInProgress = false;
+  }
+}
+
+async function runFullCityCrawlUnguarded(): Promise<FullCrawlSummary> {
+  const source = sources.CRAIGSLIST;
+  const summary: FullCrawlSummary = { listingsSeen: 0, newListings: 0 };
+
+  for (const { value: city } of SUPPORTED_CITIES) {
+    const areas = getCraigslistAreas(city);
+    const subareas = areas.length > 0 ? areas.map((a) => a.code) : [null];
+
+    // Same per-externalId de-dup across subareas as searchAllSubareas, just
+    // with no watch/price filter — one search per subarea covers more of a
+    // huge metro than a single citywide search would (Craigslist's own
+    // results are recency-capped per search).
+    const byExternalId = new Map<string, RawListing>();
+    for (const subarea of subareas) {
+      try {
+        const results = await source.search({ city, subarea, minPrice: null, maxPrice: null });
+        for (const raw of results) byExternalId.set(raw.externalId, raw);
+      } catch (err) {
+        console.error(`Full-city crawl search failed for ${city}/${subarea ?? "(whole city)"}:`, err);
+      }
+    }
+
+    const rawListings = Array.from(byExternalId.values());
+    summary.listingsSeen += rawListings.length;
+    await resolveListings(source, rawListings, summary);
+  }
+
+  return summary;
 }

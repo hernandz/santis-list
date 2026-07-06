@@ -9,6 +9,7 @@
     "lint": "eslint",
     "seed": "tsx scripts/seed.ts",
     "crawl:once": "tsx scripts/crawl-once.ts",
+    "crawl:full-city-once": "tsx scripts/full-city-crawl-once.ts",
     "digests:once": "tsx scripts/flush-digests-once.ts",
     "backfill:geo": "tsx scripts/backfill-geo.ts",
     "backfill:boundary-neighborhood": "tsx scripts/backfill-boundary-neighborhood.ts"
