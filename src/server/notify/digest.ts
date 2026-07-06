@@ -1,12 +1,18 @@
 import { prisma } from "@/server/db/prisma";
 import { emailChannel } from "./email";
 import type { NotificationListingPayload } from "./types";
+import { getNotificationExtras, type WorkLocation } from "./commuteEnrichment";
 import { buildPauseUrl } from "@/lib/pauseToken";
 
 async function flushDigest(frequency: "HOURLY" | "DAILY") {
   const settings = await prisma.settings.findUnique({ where: { id: "singleton" } });
   const toEmail = settings?.alertEmail || process.env.NOTIFY_TO_EMAIL;
   if (!toEmail) return { watchesNotified: 0 };
+
+  const work: WorkLocation | null =
+    settings?.workLatitude != null && settings?.workLongitude != null
+      ? { latitude: settings.workLatitude, longitude: settings.workLongitude }
+      : null;
 
   const watches = await prisma.watch.findMany({
     where: { isActive: true, notifyFrequency: frequency },
@@ -23,14 +29,21 @@ async function flushDigest(frequency: "HOURLY" | "DAILY") {
   for (const watch of watches) {
     if (watch.matches.length === 0) continue;
 
-    const listings: NotificationListingPayload[] = watch.matches.map((m) => ({
-      title: m.listing.title,
-      url: m.listing.url,
-      price: m.listing.price,
-      bedrooms: m.listing.bedrooms,
-      bathrooms: m.listing.bathrooms,
-      locationText: m.listing.locationText,
-    }));
+    const listings: NotificationListingPayload[] = await Promise.all(
+      watch.matches.map(async (m) => {
+        const extras = await getNotificationExtras(m.listing, work);
+        return {
+          title: m.listing.title,
+          url: m.listing.url,
+          price: m.listing.price,
+          bedrooms: m.listing.bedrooms,
+          bathrooms: m.listing.bathrooms,
+          locationText: m.listing.locationText,
+          nearestStation: extras.nearestStation,
+          commute: extras.commute,
+        };
+      }),
+    );
 
     const notification = await prisma.notification.create({
       data: {

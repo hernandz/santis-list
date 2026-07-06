@@ -5,6 +5,8 @@ export type NotificationListingPayload = {
   bedrooms: number | null;
   bathrooms: number | null;
   locationText: string | null;
+  nearestStation: { name: string; walkingMinutes: number } | null;
+  commute: { minutes: number; distanceMiles: number; approximate: boolean; mode: "car" | "transit" } | null;
 };
 
 export type NotificationPayload = {

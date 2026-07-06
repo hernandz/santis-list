@@ -1,6 +1,18 @@
 import { Resend } from "resend";
 import nodemailer from "nodemailer";
-import type { NotificationChannel, NotificationPayload } from "./types";
+import { commuteModeEmoji } from "@/lib/commuteMode";
+import type { NotificationChannel, NotificationListingPayload, NotificationPayload } from "./types";
+
+function formatCommute(commute: NotificationListingPayload["commute"]): string | null {
+  if (!commute) return null;
+  const distance = commute.distanceMiles.toFixed(1);
+  return `${commuteModeEmoji(commute.mode)} ${commute.minutes} min (${distance} mi)${commute.approximate ? " ~" : ""} to work`;
+}
+
+function formatStation(nearestStation: NotificationListingPayload["nearestStation"]): string | null {
+  if (!nearestStation) return null;
+  return `${nearestStation.walkingMinutes} min walk to ${nearestStation.name}`;
+}
 
 function renderHtml(payload: NotificationPayload): string {
   const rows = payload.listings
@@ -14,7 +26,9 @@ function renderHtml(payload: NotificationPayload): string {
         .filter(Boolean)
         .join(" · ");
 
-      return `<li><a href="${l.url}">${l.title}</a><br/><span style="color:#666">${details}</span></li>`;
+      const extras = [formatStation(l.nearestStation), formatCommute(l.commute)].filter(Boolean).join(" · ");
+
+      return `<li><a href="${l.url}">${l.title}</a><br/><span style="color:#666">${details}</span>${extras ? `<br/><span style="color:#999;font-size:12px">${extras}</span>` : ""}</li>`;
     })
     .join("");
 
@@ -27,7 +41,10 @@ function renderHtml(payload: NotificationPayload): string {
 
 function renderText(payload: NotificationPayload): string {
   const listingsText = payload.listings
-    .map((l) => `${l.title} — ${l.price != null ? `$${l.price}` : "?"}\n${l.url}`)
+    .map((l) => {
+      const extras = [formatStation(l.nearestStation), formatCommute(l.commute)].filter(Boolean).join(" · ");
+      return `${l.title} — ${l.price != null ? `$${l.price}` : "?"}${extras ? `\n${extras}` : ""}\n${l.url}`;
+    })
     .join("\n\n");
 
   const pauseLine = payload.pauseUrl ? `\n\nGetting too many of these? Pause this search: ${payload.pauseUrl}` : "";

@@ -2,6 +2,7 @@ import { prisma } from "@/server/db/prisma";
 import type { Listing, Watch } from "@/generated/prisma/client";
 import { emailChannel } from "@/server/notify/email";
 import type { NotificationListingPayload } from "@/server/notify/types";
+import { getNotificationExtras, type WorkLocation } from "@/server/notify/commuteEnrichment";
 import { buildPauseUrl } from "@/lib/pauseToken";
 import { getNeighborhoodForPoint } from "@/server/geo/neighborhoodBoundaries";
 import { craigslistSource } from "./sources/craigslist";
@@ -136,6 +137,15 @@ async function runCrawlCycleUnguarded(): Promise<CrawlCycleSummary> {
   const watches = await prisma.watch.findMany({ where: { isActive: true } });
   const searchCache: SearchCache = new Map();
 
+  // Fetched once per cycle (not per watch/listing) — same singleton row and
+  // work location applies to every notification sent this cycle.
+  const settings = await prisma.settings.findUnique({ where: { id: "singleton" } });
+  const work: WorkLocation | null =
+    settings?.workLatitude != null && settings?.workLongitude != null
+      ? { latitude: settings.workLatitude, longitude: settings.workLongitude }
+      : null;
+  const alertEmail = settings?.alertEmail || process.env.NOTIFY_TO_EMAIL;
+
   const summary: CrawlCycleSummary = {
     watchesProcessed: 0,
     watchesFailed: 0,
@@ -151,7 +161,7 @@ async function runCrawlCycleUnguarded(): Promise<CrawlCycleSummary> {
     // One watch's failure (bad city, transient network error, CL rate limiting, ...)
     // must not stop the rest of the active watches from being crawled.
     try {
-      await processWatch(watch, summary, searchCache);
+      await processWatch(watch, summary, searchCache, work, alertEmail);
       summary.watchesProcessed += 1;
     } catch (err) {
       summary.watchesFailed += 1;
@@ -164,7 +174,13 @@ async function runCrawlCycleUnguarded(): Promise<CrawlCycleSummary> {
   return summary;
 }
 
-async function processWatch(watch: Watch, summary: CrawlCycleSummary, searchCache: SearchCache): Promise<void> {
+async function processWatch(
+  watch: Watch,
+  summary: CrawlCycleSummary,
+  searchCache: SearchCache,
+  work: WorkLocation | null,
+  alertEmail: string | null | undefined,
+): Promise<void> {
   const source = sources.CRAIGSLIST;
   // Search by subarea (if set) or the whole city, then rely on
   // passesNeighborhoodBoundary (real polygon geometry) to attribute listings
@@ -247,6 +263,7 @@ async function processWatch(watch: Watch, summary: CrawlCycleSummary, searchCach
 
     if (watch.notifyFrequency === "IMMEDIATE") {
       for (const listing of newMatches) {
+        const extras = await getNotificationExtras(listing, work);
         immediateMatches.push({
           title: listing.title,
           url: listing.url,
@@ -254,13 +271,12 @@ async function processWatch(watch: Watch, summary: CrawlCycleSummary, searchCach
           bedrooms: listing.bedrooms,
           bathrooms: listing.bathrooms,
           locationText: listing.locationText,
+          nearestStation: extras.nearestStation,
+          commute: extras.commute,
         });
       }
     }
   }
-
-  const alertEmail =
-    (await prisma.settings.findUnique({ where: { id: "singleton" } }))?.alertEmail || process.env.NOTIFY_TO_EMAIL;
 
   if (immediateMatches.length > 0 && alertEmail) {
     const notification = await prisma.notification.create({
