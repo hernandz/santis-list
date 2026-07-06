@@ -70,9 +70,19 @@ model Watch {
   city          String
   neighborhoods String[]
   minPrice      Int?
+  profileId     String?  // nullable — no profile means "crawl/match only, never email"
+  ...
+}
+
+model Profile {
+  id    String @id @default(cuid())
+  name  String
+  email String @unique
   ...
 }
 ```
+
+`Profile` is the one piece of "user" concept in this app, and it's deliberately minimal — no password, no session, no login of its own. It's found-or-created by email the moment someone turns on alerts for a `Watch`; browsing and creating searches needs no `Profile` at all. This is why `Watch.profileId` is nullable rather than a required foreign key.
 
 From that file, `npx prisma generate` produces a fully-typed JS/TS client (checked into `src/generated/prisma/` in this project) that you import and query against:
 
@@ -83,16 +93,16 @@ await prisma.watch.update({ where: { id }, data: { isActive: false } });
 
 That's the same shape as `session.query(Watch).filter_by(id=id).first()` / Django's `Watch.objects.get(id=id)` — just async (`await`) because everything I/O-bound in Node is async.
 
-**Migrations** (`prisma/migrations/`) work like Alembic/Django migrations: `npx prisma migrate dev` diffs your schema file against the current migration history, generates a new SQL migration file, and applies it. `npx prisma studio` is a free GUI for browsing/editing rows directly (think pgAdmin, but auto-generated from your schema).
+**Migrations** (`prisma/migrations/`) work like Alembic/Django migrations: `npx prisma migrate dev` diffs your schema file against the current migration history, generates a new SQL migration file, and applies it locally. In production there's no interactive dev step — the deploy's start command runs `npx prisma migrate deploy` first, which just applies whatever pending migrations exist (safe to run every boot; a no-op if the DB is already current). `npx prisma studio` is a free GUI for browsing/editing rows directly (think pgAdmin, but auto-generated from your schema) — currently also the only way to manage `Profile` rows, since there's no admin UI for that yet.
 
 ## 5. The crawler and scheduler
 
-- **`node-cron`** is this project's APScheduler-equivalent: `cron.schedule("*/20 * * * *", runCrawlCycle)` runs a function on a cron-style schedule, in-process, in the same running Node process as the web server (not a separate OS-level cron job or worker process).
+- **`node-cron`** is this project's APScheduler-equivalent: `cron.schedule("*/20 * * * *", runCrawlCycle)` runs a function on a cron-style schedule, in-process, in the same running Node process as the web server (not a separate OS-level cron job or worker process). This project registers four such jobs (`src/server/scheduler.ts`): the ~20-minute per-watch crawl, hourly + daily digest flushes, and a weekly full-city crawl (`runFullCityCrawl`, cron's 5th field is day-of-week, `0` = Sunday) that backfills every listing in every supported city regardless of any saved search — it shares an in-progress flag with the regular crawl (both `throw` rather than overlap) since they'd otherwise race on the same DB rows.
 - **`src/instrumentation.ts`** is a special Next.js file that runs exactly once, when the server process boots — the closest analogy is a Flask app factory's one-time setup code, or Django's `AppConfig.ready()`. This project uses it to call `register()` in `src/server/scheduler.ts`, which sets up the cron jobs.
 - **The actual scraping** (`src/server/crawl/sources/craigslist.ts`) is plain `fetch()` + Cheerio — Cheerio is a server-side jQuery-like API for parsing and querying static HTML, the direct equivalent of Python's BeautifulSoup. No headless browser is involved; Craigslist's no-JS fallback HTML is enough.
 - **Politeness/rate limiting** (`src/server/rateLimiter.ts`) and a circuit breaker in `craigslist.ts` throttle and back off requests — conceptually the same as what you'd build with `time.sleep` + a failure counter in a Python scraper, just wrapped around every outgoing `fetch()`.
 
-One crawl cycle, end to end: for each active saved search, fetch Craigslist's search-results HTML for that search's sub-area(s) → parse out title/price/URL per listing with Cheerio → dedupe against the DB by the listing's URL token → for genuinely new listings, fetch that listing's own detail page to backfill bedrooms/bathrooms/coordinates → check the coordinates against real neighborhood boundary polygons (`src/server/geo/neighborhoodBoundaries.ts`) → if it matches the search's criteria, record a match and (depending on notification frequency) send or queue an email.
+One crawl cycle, end to end: for each active saved search, fetch Craigslist's search-results HTML for that search's sub-area(s) → parse out title/price/URL per listing with Cheerio → dedupe against the DB by the listing's URL token → for genuinely new listings, fetch that listing's own detail page to backfill bedrooms/bathrooms/coordinates → check the coordinates against real neighborhood boundary polygons (`src/server/geo/neighborhoodBoundaries.ts`) and persist the result on `Listing.boundaryNeighborhood` → if it matches the search's criteria, record a match and (only if the search has a `Profile` attached) send or queue an email. The weekly full-city crawl runs the same discover→dedupe→enrich pipeline (factored out as `resolveListings`, shared by both) but stops there — no per-watch matching, no notifications.
 
 ## 6. Directory tour
 
@@ -102,6 +112,7 @@ src/
     page.tsx              # "/" — the listings feed (client component)
     watches/              # "/watches" — saved search management
     map/                  # "/map" — map view
+    rent-map/             # "/rent-map" — neighborhood median-rent choropleth
     settings/             # "/settings"
     login/                # "/login"
     api/                  # every subfolder here is an API endpoint, not a page
@@ -109,8 +120,8 @@ src/
   lib/                    # small, framework-agnostic helper modules
   server/                 # server-only code — never sent to the browser
     crawl/                # the Craigslist scraper + crawl cycle orchestration
-    notify/               # email sending + digest batching
-    geo/                  # neighborhood boundaries, transit stations, commute calc
+    notify/               # email sending + digest batching + Profile find-or-create
+    geo/                  # neighborhood boundaries, transit stations, commute calc + cache
     db/                   # the Prisma client singleton
   generated/prisma/       # auto-generated by `prisma generate` — don't hand-edit
   instrumentation.ts      # runs once at server boot (starts the scheduler)
@@ -128,5 +139,5 @@ Loading `/` in a browser with the password gate enabled:
 1. Request hits the Node process. `src/proxy.ts` runs first, checks for a valid `app_auth` cookie; if missing, responds with a redirect to `/login` and nothing else runs.
 2. With a valid cookie: Next.js matches `/` to `src/app/page.tsx`, which is a **Client Component** (`"use client"` at the top) — so what actually gets sent to the browser first is a mostly-empty shell plus the compiled JS bundle for that component.
 3. The browser loads that JS, React mounts the component, and its `useEffect` hooks fire — one of them calls `fetch("/api/listings?...")`.
-4. That request hits `src/app/api/listings/route.ts`'s exported `GET` function, which builds a Prisma query (city/price/neighborhood filters, live boundary-polygon checks, optional commute-time lookups), awaits the result, and returns `NextResponse.json(...)`.
+4. That request hits `src/app/api/listings/route.ts`'s exported `GET` function, which builds a Prisma query (city/price/neighborhood filters, the persisted `boundaryNeighborhood` column, optional commute-time lookups and median-rent stats), awaits the result, and returns `NextResponse.json(...)`.
 5. The browser's `fetch()` resolves, `setState()` is called with the results, and React re-renders the component function with real data — same purely-in-browser update cycle as any SPA you've built, it just happens to be served from the same Next.js process that rendered the initial shell.
