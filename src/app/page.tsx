@@ -767,7 +767,7 @@ function ListingsFeedPage() {
                 className="text-left shrink-0 font-semibold"
                 title={
                   listing.medianRent != null
-                    ? `Median for ${listing.bedrooms ?? "?"}bd/${listing.bathrooms ?? "?"}ba in ${listing.boundaryNeighborhood}: $${Math.round(listing.medianRent).toLocaleString()}`
+                    ? `Median for ${listing.bedrooms ?? "?"}bd in ${listing.boundaryNeighborhood}: $${Math.round(listing.medianRent).toLocaleString()}`
                     : undefined
                 }
                 style={medianRelativeColor(listing.price, listing.medianRent)}

@@ -308,63 +308,64 @@ async function attachCommuteAny<T extends Listing>(
     : attachCommute(listings, mode, work, useGoogle);
 }
 
-function medianRentGroupKey(city: string, neighborhood: string, bedrooms: number, bathrooms: number): string {
-  return `${city}|${neighborhood}|${bedrooms}|${bathrooms}`;
+function medianRentGroupKey(city: string, neighborhood: string, bedrooms: number): string {
+  return `${city}|${neighborhood}|${bedrooms}`;
 }
 
 // Real median across every listing (not just what's on screen) sharing the
-// same city + verified neighborhood + bed/bath combo — one batched query
-// (via unnest, not one query per distinct group) covering every group
-// present on the current page at once. Only ever computed for listings
-// with all four fields known; a listing missing any of them (no verified
-// boundaryNeighborhood, no bed/bath count) just doesn't get a median.
+// same city + verified neighborhood + bedroom count — one batched query (via
+// unnest, not one query per distinct group) covering every group present on
+// the current page at once. Deliberately not further split by bathrooms —
+// that fragmented groups down to 1-2 comparable listings each (e.g. a
+// specific neighborhood's only 1bd/1ba), too sparse to mean anything; bedroom
+// count is the dimension that actually drives rent comparison shopping.
+// Only ever computed for listings with a verified boundaryNeighborhood and a
+// known bedroom count — missing either just means no median.
 async function getMedianRents(
-  groups: { city: string; neighborhood: string; bedrooms: number; bathrooms: number }[],
+  groups: { city: string; neighborhood: string; bedrooms: number }[],
 ): Promise<Map<string, number>> {
   if (groups.length === 0) return new Map();
 
-  const rows = await prisma.$queryRaw<{ city: string; neighborhood: string; bedrooms: number; bathrooms: number; median: number }[]>`
-    SELECT g.city, g.neighborhood, g.bedrooms, g.bathrooms,
+  const rows = await prisma.$queryRaw<{ city: string; neighborhood: string; bedrooms: number; median: number }[]>`
+    SELECT g.city, g.neighborhood, g.bedrooms,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY l.price) AS median
     FROM unnest(
       ${groups.map((g) => g.city)}::text[],
       ${groups.map((g) => g.neighborhood)}::text[],
-      ${groups.map((g) => g.bedrooms)}::int[],
-      ${groups.map((g) => g.bathrooms)}::float[]
-    ) AS g(city, neighborhood, bedrooms, bathrooms)
+      ${groups.map((g) => g.bedrooms)}::int[]
+    ) AS g(city, neighborhood, bedrooms)
     JOIN "Listing" l
       ON l.city = g.city
       AND l."boundaryNeighborhood" = g.neighborhood
       AND l.bedrooms = g.bedrooms
-      AND l.bathrooms = g.bathrooms
     WHERE l.price IS NOT NULL
-    GROUP BY g.city, g.neighborhood, g.bedrooms, g.bathrooms
+    GROUP BY g.city, g.neighborhood, g.bedrooms
   `;
 
   const map = new Map<string, number>();
   for (const row of rows) {
-    map.set(medianRentGroupKey(row.city, row.neighborhood, row.bedrooms, row.bathrooms), Number(row.median));
+    map.set(medianRentGroupKey(row.city, row.neighborhood, row.bedrooms), Number(row.median));
   }
   return map;
 }
 
 async function attachMedianRent<T extends Listing>(listings: T[]): Promise<(T & { medianRent: number | null })[]> {
   const seen = new Set<string>();
-  const groups: { city: string; neighborhood: string; bedrooms: number; bathrooms: number }[] = [];
+  const groups: { city: string; neighborhood: string; bedrooms: number }[] = [];
   for (const l of listings) {
-    if (l.boundaryNeighborhood == null || l.bedrooms == null || l.bathrooms == null) continue;
-    const key = medianRentGroupKey(l.city, l.boundaryNeighborhood, l.bedrooms, l.bathrooms);
+    if (l.boundaryNeighborhood == null || l.bedrooms == null) continue;
+    const key = medianRentGroupKey(l.city, l.boundaryNeighborhood, l.bedrooms);
     if (seen.has(key)) continue;
     seen.add(key);
-    groups.push({ city: l.city, neighborhood: l.boundaryNeighborhood, bedrooms: l.bedrooms, bathrooms: l.bathrooms });
+    groups.push({ city: l.city, neighborhood: l.boundaryNeighborhood, bedrooms: l.bedrooms });
   }
 
   const medians = await getMedianRents(groups);
   return listings.map((l) => {
-    if (l.boundaryNeighborhood == null || l.bedrooms == null || l.bathrooms == null) {
+    if (l.boundaryNeighborhood == null || l.bedrooms == null) {
       return { ...l, medianRent: null };
     }
-    const key = medianRentGroupKey(l.city, l.boundaryNeighborhood, l.bedrooms, l.bathrooms);
+    const key = medianRentGroupKey(l.city, l.boundaryNeighborhood, l.bedrooms);
     return { ...l, medianRent: medians.get(key) ?? null };
   });
 }
