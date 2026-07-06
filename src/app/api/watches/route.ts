@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/server/db/prisma";
 import { watchInputSchema } from "@/lib/watchSchema";
+import { resolveProfileId } from "@/server/notify/profile";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const watches = await prisma.watch.findMany({ orderBy: { createdAt: "desc" } });
+  const watches = await prisma.watch.findMany({ include: { profile: true }, orderBy: { createdAt: "desc" } });
   return NextResponse.json(watches, { headers: { "Cache-Control": "no-store" } });
 }
 
@@ -16,6 +17,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const watch = await prisma.watch.create({ data: parsed.data });
+  const { alertName, alertEmail, removeAlerts, ...watchFields } = parsed.data;
+  const profileId = await resolveProfileId({ alertName, alertEmail, removeAlerts });
+
+  const watch = await prisma.watch.create({ data: { ...watchFields, profileId: profileId ?? null } });
   return NextResponse.json(watch, { status: 201 });
 }

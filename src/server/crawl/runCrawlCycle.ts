@@ -34,17 +34,20 @@ function passesThresholds(
   return true;
 }
 
+function passesKeyword(watch: { keyword: string | null }, listing: { title: string }): boolean {
+  if (!watch.keyword) return true;
+  return listing.title.toLowerCase().includes(watch.keyword.toLowerCase());
+}
+
 // Verifies a listing's real coordinates actually fall inside one of the watch's
 // selected neighborhood polygons, rather than trusting Craigslist's own text
-// search alone. If the listing has no map coordinates (Craigslist doesn't always
-// include one), we fall back to trusting the text-search match rather than
-// silently dropping otherwise-real matches for lack of geo data.
-async function passesNeighborhoodBoundary(watch: Watch, listing: Listing): Promise<boolean> {
+// search alone. If the listing has no verified boundaryNeighborhood (either no
+// map coordinates at all, or not yet backfilled), we fall back to trusting the
+// text-search match rather than silently dropping otherwise-real matches.
+function passesNeighborhoodBoundary(watch: Watch, listing: Listing): boolean {
   if (watch.neighborhoods.length === 0) return true;
-  if (listing.latitude == null || listing.longitude == null) return true;
-
-  const actualNeighborhood = await getNeighborhoodForPoint(listing.city, listing.latitude, listing.longitude);
-  return actualNeighborhood != null && watch.neighborhoods.includes(actualNeighborhood);
+  if (listing.boundaryNeighborhood == null) return true;
+  return watch.neighborhoods.includes(listing.boundaryNeighborhood);
 }
 
 // Cache of in-flight/completed searches for one crawl cycle, keyed by the exact
@@ -65,7 +68,16 @@ function cachedSearch(
   const cached = cache.get(key);
   if (cached) return cached;
 
-  const promise = source.search(criteria);
+  const promise = source.search(criteria).catch((err) => {
+    // Evict a failed search immediately so the next watch sharing this exact
+    // tuple gets a fresh attempt instead of silently inheriting this same
+    // rejection for the rest of the cycle — a caller that already grabbed
+    // this promise reference still sees the original failure (their own
+    // per-watch try/catch in processWatch already isolates that), but
+    // nothing after this point stays poisoned by it.
+    cache.delete(key);
+    throw err;
+  });
   cache.set(key, promise);
   return promise;
 }
@@ -134,17 +146,18 @@ export async function runCrawlCycle(): Promise<CrawlCycleSummary> {
 }
 
 async function runCrawlCycleUnguarded(): Promise<CrawlCycleSummary> {
-  const watches = await prisma.watch.findMany({ where: { isActive: true } });
+  const watches = await prisma.watch.findMany({ where: { isActive: true }, include: { profile: true } });
   const searchCache: SearchCache = new Map();
 
-  // Fetched once per cycle (not per watch/listing) — same singleton row and
-  // work location applies to every notification sent this cycle.
+  // Deployment-wide fallback commute origin/billing toggle — per-watch
+  // alert email and (optionally) work address instead come from the
+  // watch's own Profile, fetched above alongside each watch.
   const settings = await prisma.settings.findUnique({ where: { id: "singleton" } });
-  const work: WorkLocation | null =
+  const defaultWork: WorkLocation | null =
     settings?.workLatitude != null && settings?.workLongitude != null
       ? { latitude: settings.workLatitude, longitude: settings.workLongitude }
       : null;
-  const alertEmail = settings?.alertEmail || process.env.NOTIFY_TO_EMAIL;
+  const useGoogle = settings?.useGoogleDirections ?? false;
 
   const summary: CrawlCycleSummary = {
     watchesProcessed: 0,
@@ -161,7 +174,11 @@ async function runCrawlCycleUnguarded(): Promise<CrawlCycleSummary> {
     // One watch's failure (bad city, transient network error, CL rate limiting, ...)
     // must not stop the rest of the active watches from being crawled.
     try {
-      await processWatch(watch, summary, searchCache, work, alertEmail);
+      const work: WorkLocation | null =
+        watch.profile?.workLatitude != null && watch.profile?.workLongitude != null
+          ? { latitude: watch.profile.workLatitude, longitude: watch.profile.workLongitude }
+          : defaultWork;
+      await processWatch(watch, summary, searchCache, work, useGoogle, watch.profile?.email ?? null);
       summary.watchesProcessed += 1;
     } catch (err) {
       summary.watchesFailed += 1;
@@ -179,7 +196,8 @@ async function processWatch(
   summary: CrawlCycleSummary,
   searchCache: SearchCache,
   work: WorkLocation | null,
-  alertEmail: string | null | undefined,
+  useGoogle: boolean,
+  alertEmail: string | null,
 ): Promise<void> {
   const source = sources.CRAIGSLIST;
   // Search by subarea (if set) or the whole city, then rely on
@@ -202,8 +220,9 @@ async function processWatch(
   const resolvedListings: Listing[] = [];
   for (const raw of rawListings) {
     let listing = existingByExternalId.get(raw.externalId);
+    const isNewListing = !listing;
 
-    if (!listing) {
+    if (isNewListing) {
       listing = await prisma.listing.create({
         data: {
           source: "CRAIGSLIST",
@@ -216,11 +235,32 @@ async function processWatch(
         },
       });
       summary.newListings += 1;
+    }
 
+    // Retry detail enrichment for brand-new listings, and for existing ones
+    // that never picked it up — postedAt is only ever set by a successful
+    // fetchDetails call, so a listing still missing it almost always means
+    // an earlier attempt failed transiently, not that the page genuinely has
+    // no posting date. Without this retry, one bad network blip on first
+    // sight permanently excluded a listing from every bedroom/bathroom-
+    // filtered watch, since passesThresholds treats null as "doesn't meet
+    // the minimum" with no automatic recovery. Bounded by the same global
+    // rate limiter as every other request — if Craigslist's detail-page
+    // markup changed in a way that broke parsing entirely, this would retry
+    // every affected listing every cycle rather than just once, which is the
+    // right tradeoff (still-serialized, still-rate-limited) for not silently
+    // losing matches forever.
+    if (isNewListing || listing!.postedAt == null) {
       try {
         const details = await source.fetchDetails(raw.url);
+        // Computed once, right when lat/lng first become known, and never
+        // recomputed — see the schema comment on Listing.boundaryNeighborhood.
+        const boundaryNeighborhood =
+          details.latitude != null && details.longitude != null
+            ? await getNeighborhoodForPoint(raw.city, details.latitude, details.longitude)
+            : null;
         listing = await prisma.listing.update({
-          where: { id: listing.id },
+          where: { id: listing!.id },
           data: {
             bedrooms: details.bedrooms,
             bathrooms: details.bathrooms,
@@ -228,6 +268,7 @@ async function processWatch(
             address: details.address,
             latitude: details.latitude,
             longitude: details.longitude,
+            boundaryNeighborhood,
           },
         });
       } catch (err) {
@@ -235,13 +276,14 @@ async function processWatch(
       }
     }
 
-    resolvedListings.push(listing);
+    resolvedListings.push(listing!);
   }
 
   const candidates: Listing[] = [];
   for (const listing of resolvedListings) {
     if (!passesThresholds(watch, listing)) continue;
-    if (!(await passesNeighborhoodBoundary(watch, listing))) continue;
+    if (!passesKeyword(watch, listing)) continue;
+    if (!passesNeighborhoodBoundary(watch, listing)) continue;
     candidates.push(listing);
   }
 
@@ -261,9 +303,12 @@ async function processWatch(
     });
     summary.matchesCreated += newMatches.length;
 
-    if (watch.notifyFrequency === "IMMEDIATE") {
+    // No profile (no one asked for alerts on this search) means there's no
+    // point computing commute/station extras for an email that'll never be
+    // sent — the search still crawls/matches for browsing regardless.
+    if (watch.notifyFrequency === "IMMEDIATE" && alertEmail) {
       for (const listing of newMatches) {
-        const extras = await getNotificationExtras(listing, work);
+        const extras = await getNotificationExtras(listing, work, useGoogle);
         immediateMatches.push({
           title: listing.title,
           url: listing.url,
@@ -297,14 +342,24 @@ async function processWatch(
         pauseUrl: buildPauseUrl(watch.id) ?? undefined,
       });
 
-      await prisma.notification.update({
-        where: { id: notification.id },
-        data: { status: "SENT", sentAt: new Date() },
-      });
-      await prisma.watchMatch.updateMany({
-        where: { watchId: watch.id, listing: { url: { in: immediateMatches.map((m) => m.url) } } },
-        data: { notified: true },
-      });
+      // Atomic — the email has genuinely gone out at this point, so marking
+      // the notification SENT and the matches notified must succeed or fail
+      // together. Previously these were two separate calls: if the second
+      // one threw, the catch block below would overwrite the status to
+      // FAILED even though the email was actually delivered. Also uses the
+      // listing ids already in hand (newMatches) instead of re-joining
+      // through listing.url, which only worked by coincidence of matching
+      // immediateMatches 1:1 with newMatches in the same order.
+      await prisma.$transaction([
+        prisma.notification.update({
+          where: { id: notification.id },
+          data: { status: "SENT", sentAt: new Date() },
+        }),
+        prisma.watchMatch.updateMany({
+          where: { watchId: watch.id, listingId: { in: newMatches.map((l) => l.id) } },
+          data: { notified: true },
+        }),
+      ]);
       summary.immediateNotificationsSent += 1;
     } catch (err) {
       await prisma.notification.update({

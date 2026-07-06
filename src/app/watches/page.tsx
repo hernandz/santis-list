@@ -7,7 +7,7 @@ import { PauseToggleButton } from "./PauseToggleButton";
 export const dynamic = "force-dynamic";
 
 export default async function WatchesPage() {
-  const watches = await prisma.watch.findMany({ orderBy: { createdAt: "desc" } });
+  const watches = await prisma.watch.findMany({ include: { profile: true }, orderBy: { createdAt: "desc" } });
 
   return (
     <div className="flex flex-col gap-6">
@@ -47,7 +47,9 @@ export default async function WatchesPage() {
                 {watch.maxPrice != null ? ` · max $${watch.maxPrice}` : ""}
                 {watch.minBedrooms != null ? ` · ${watch.minBedrooms}+ bd` : ""}
                 {watch.minBathrooms != null ? ` · ${watch.minBathrooms}+ ba` : ""}
-                {` · ${watch.notifyFrequency.toLowerCase()}`}
+                {watch.profile
+                  ? ` · ${watch.notifyFrequency.toLowerCase()} alerts to ${watch.profile.email}`
+                  : " · browsing only, no alerts"}
               </div>
             </div>
             <div className="flex items-center gap-3 text-sm shrink-0">

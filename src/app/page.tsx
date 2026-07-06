@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { VISIBLE_CITIES } from "@/lib/craigslistCities";
@@ -27,6 +27,7 @@ type Listing = {
   nextStation: NearestStationInfo | null;
   boundaryNeighborhood: string | null;
   commute?: { minutes: number; distanceMiles: number; approximate: boolean } | null;
+  medianRent: number | null;
 };
 
 type ListingsResponse = {
@@ -39,6 +40,7 @@ type ListingsResponse = {
 
 const emptyFilters = {
   city: "newyork",
+  keyword: "",
   neighborhood: "",
   minPrice: "",
   maxPrice: "",
@@ -105,6 +107,23 @@ function numericRange(values: (number | null | undefined)[]): [number, number] {
   const nums = values.filter((v): v is number => v != null);
   if (nums.length === 0) return [0, 0];
   return [Math.min(...nums), Math.max(...nums)];
+}
+
+// Yellow at the median, trending green below it and red above — unlike
+// gradientTextColor above (relative to whatever happens to be on screen),
+// this is relative to a real external reference: the server-computed median
+// rent for this exact neighborhood + bed/bath combo (see medianRent on
+// Listing). No color at all when there's no median to compare against
+// (missing verified neighborhood or bed/bath count) rather than falling back
+// to a page-relative gradient, which would silently change what the color
+// means listing to listing.
+const MEDIAN_COLOR_BAND = 0.3; // ±30% of median reaches full green/red
+function medianRelativeColor(price: number | null, medianRent: number | null): React.CSSProperties {
+  if (price == null || medianRent == null || medianRent === 0) return {};
+  const ratio = price / medianRent;
+  const t = Math.min(1, Math.max(-1, (ratio - 1) / MEDIAN_COLOR_BAND));
+  // t=0 (at median) -> 60° yellow; t=-1 (well below) -> 120° green; t=1 (well above) -> 0° red.
+  return { color: hueColor(60 - t * 60) };
 }
 
 function formatRelativeDays(value: string | null) {
@@ -260,6 +279,7 @@ function ListingsFeedPage() {
         params.set("watchId", scope);
       }
       if (filters.city) params.set("city", filters.city);
+      if (filters.keyword) params.set("keyword", filters.keyword);
       if (filters.neighborhood) params.set("neighborhood", filters.neighborhood);
       if (filters.minPrice) params.set("minPrice", filters.minPrice);
       if (filters.maxPrice) params.set("maxPrice", filters.maxPrice);
@@ -319,6 +339,22 @@ function ListingsFeedPage() {
     return <span aria-hidden> {direction === "asc" ? "↑" : direction === "desc" ? "↓" : "•"}</span>;
   }
 
+  // Grouped by transit system/operator — only meaningful for cities that mix
+  // multiple independent operators (sfbay: BART/Muni Metro/Caltrain/VTA),
+  // where every line has a `system`. Single-operator cities (NYC subway, LA
+  // Metro) have no `system` on any line, so this collapses to one ungrouped
+  // ("") bucket and the UI below skips rendering a header for it.
+  const trainLineGroups = useMemo(() => {
+    const groups = new Map<string, TransitLine[]>();
+    for (const line of trainLines) {
+      const key = line.system ?? "";
+      const group = groups.get(key);
+      if (group) group.push(line);
+      else groups.set(key, [line]);
+    }
+    return Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [trainLines]);
+
   // Fixed pixel column widths only apply from sm: up — below that, rows
   // stack into a single-column card layout instead (see the header/row
   // className usage below), since fixed-width columns can't shrink to fit a
@@ -336,11 +372,11 @@ function ListingsFeedPage() {
       ? "sm:grid-cols-[1fr_100px_100px_120px]"
       : "sm:grid-cols-[1fr_100px_120px]";
 
-  // Gradient ranges are computed over whatever's currently on screen (this
-  // page of results), not the whole search — the full result set could span
-  // thousands of rows across many un-fetched pages, and colors would have to
-  // shift as you compute more of it anyway.
-  const [priceMin, priceMax] = numericRange(data?.listings.map((l) => l.price) ?? []);
+  // Commute's gradient range is computed over whatever's currently on screen
+  // (this page of results), not the whole search — the full result set could
+  // span thousands of rows across many un-fetched pages, and colors would
+  // have to shift as you compute more of it anyway. Price doesn't need this
+  // — it's colored against a real external reference (medianRent) instead.
   const [commuteMin, commuteMax] = numericRange(data?.listings.map((l) => l.commute?.minutes) ?? []);
 
   // Keeps the ad-hoc City filter (and the city-derived defaults) in sync
@@ -466,6 +502,15 @@ function ListingsFeedPage() {
           </select>
         </label>
         <label className="flex flex-col gap-1 text-xs">
+          Keyword
+          <input
+            className="border rounded px-2 py-1 text-sm border-black/15 dark:border-white/20 bg-transparent"
+            placeholder="e.g. parking, pool"
+            value={filters.keyword}
+            onChange={(e) => updateFilter("keyword", e.target.value)}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
           Neighborhood
           <input
             className="border rounded px-2 py-1 text-sm border-black/15 dark:border-white/20 bg-transparent"
@@ -582,28 +627,39 @@ function ListingsFeedPage() {
             </button>
           </div>
           {trainLinesExpanded && (
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col gap-2">
               {trainLines.length === 0 && (
                 <span className="text-xs text-black/40 dark:text-white/40">Loading lines for this city…</span>
               )}
-              {trainLines.map((line) => {
-                const selected = filters.trainLines.split(",").includes(line.name);
-                return (
-                  <button
-                    key={line.name}
-                    type="button"
-                    onClick={() => toggleTrainLine(line.name)}
-                    className="flex items-center gap-1"
-                    title={line.name}
-                  >
-                    <span
-                      className={`inline-flex w-5 h-5 rounded-full ${selected ? "ring-2 ring-offset-1 ring-black dark:ring-white ring-offset-transparent" : "opacity-40"}`}
-                    >
-                      <TrainLineBadge line={line} />
+              {trainLineGroups.map(([system, lines]) => (
+                <div key={system} className="flex flex-col gap-1">
+                  {system && (
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-black/40 dark:text-white/40">
+                      {system}
                     </span>
-                  </button>
-                );
-              })}
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    {lines.map((line) => {
+                      const selected = filters.trainLines.split(",").includes(line.name);
+                      return (
+                        <button
+                          key={line.name}
+                          type="button"
+                          onClick={() => toggleTrainLine(line.name)}
+                          className="flex items-center gap-1"
+                          title={line.name}
+                        >
+                          <span
+                            className={`inline-flex w-5 h-5 rounded-full ${selected ? "ring-2 ring-offset-1 ring-black dark:ring-white ring-offset-transparent" : "opacity-40"}`}
+                          >
+                            <TrainLineBadge line={line} />
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -611,8 +667,9 @@ function ListingsFeedPage() {
 
       {data?.truncated && (
         <p className="text-xs text-amber-600 dark:text-amber-400 -mt-3">
-          Sorting/filtering by walk time only considers the most recent matching listings up to an internal cap —
-          there are more results than that in total, so a few older ones may be left out.
+          Neighborhood, train line, walk time, and commute filtering/sorting only consider the most recent matching
+          listings up to an internal cap — there are more results than that in total, so a few older ones may be
+          left out.
         </p>
       )}
 
@@ -706,7 +763,15 @@ function ListingsFeedPage() {
                   )}
                 </div>
               </div>
-              <div className="text-left shrink-0 font-semibold" style={gradientTextColor(listing.price, priceMin, priceMax)}>
+              <div
+                className="text-left shrink-0 font-semibold"
+                title={
+                  listing.medianRent != null
+                    ? `Median for ${listing.bedrooms ?? "?"}bd/${listing.bathrooms ?? "?"}ba in ${listing.boundaryNeighborhood}: $${Math.round(listing.medianRent).toLocaleString()}`
+                    : undefined
+                }
+                style={medianRelativeColor(listing.price, listing.medianRent)}
+              >
                 {listing.price != null ? `$${listing.price.toLocaleString()}` : "—"}
               </div>
               {showTrainColumn && (

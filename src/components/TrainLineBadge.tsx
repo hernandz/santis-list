@@ -1,10 +1,15 @@
 "use client";
 
-export type TransitLine = { name: string; color: string };
+export type TransitLine = { name: string; color: string; system?: string };
 
 function abbreviate(name: string): string {
   const metroMatch = name.match(/^Metro (\w+) Line$/i);
   if (metroMatch) return metroMatch[1];
+  // "VTA Blue"/"VTA Green"/"VTA Orange" are prefixed with the operator name
+  // to stay distinct from BART's similarly-named lines in a flat list — but
+  // that means they'd otherwise all abbreviate down to the same "V".
+  const vtaMatch = name.match(/^VTA (\w+)$/i);
+  if (vtaMatch) return vtaMatch[1].slice(0, 1).toUpperCase();
   if (name.length <= 3) return name;
   return name.slice(0, 1).toUpperCase();
 }

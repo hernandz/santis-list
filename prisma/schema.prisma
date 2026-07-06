@@ -37,6 +37,28 @@ enum NotificationStatus {
   FAILED
 }
 
+// A person who wants email alerts for one or more saved searches — created
+// on demand (find-or-create by email) the first time someone turns on alerts
+// for a Watch, not up front. There's no login/password of its own; the
+// shared app password already gates access to the deployment, and browsing
+// or creating searches needs no identity at all. A Watch with no profile
+// still crawls/matches normally (browsable via "Only <name>" scope) — it
+// just never sends anything, since there's no email to send it to.
+model Profile {
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  // Optional per-person commute origin for notification emails (e.g. "12
+  // min to Union Square" in a digest) — falls back to the deployment-wide
+  // Settings.workAddress if a profile hasn't set its own.
+  workAddress   String?
+  workLatitude  Float?
+  workLongitude Float?
+  createdAt     DateTime @default(now())
+
+  watches Watch[]
+}
+
 model Watch {
   id                  String           @id @default(cuid())
   name                String
@@ -47,15 +69,27 @@ model Watch {
   // optimization; neighborhoods below are the actual match filter.
   subareas            String[]         @default([])
   neighborhoods       String[]         @default([])
+  // Free-text substring match against a listing's title (case-insensitive) —
+  // same mechanism as the ad-hoc keyword filter on the browse feed, just
+  // persisted as part of the saved search's own crawl/match criteria.
+  keyword             String?
   minPrice            Int?
   maxPrice            Int?
   minBedrooms         Int?
-  minBathrooms        Int?
+  // Float, not Int — half-baths are common (1.5, 2.5) and the form's minimum
+  // bathrooms field accepts them (step="0.5"); Listing.bathrooms below is
+  // Float for the same reason. This used to be Int, which silently truncated
+  // e.g. 1.5 down to 1 on save with no error.
+  minBathrooms        Float?
   notifyFrequency     NotifyFrequency  @default(IMMEDIATE)
+  // Who to actually email — null means this search just crawls/matches for
+  // browsing, with alerts never sent regardless of notifyFrequency above.
+  profileId           String?
   isActive            Boolean          @default(true)
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
 
+  profile       Profile?        @relation(fields: [profileId], references: [id], onDelete: SetNull)
   matches       WatchMatch[]
   notifications Notification[]
 }
@@ -77,13 +111,27 @@ model Listing {
   postedAt     DateTime?
   firstSeenAt  DateTime          @default(now())
   rawData      Json?
+  // Verified neighborhood (point-in-polygon against real boundary data, same
+  // check as matchesNeighborhoods/passesNeighborhoodBoundary) computed once
+  // and persisted here — everywhere else in the app this is computed live
+  // per-request since it's only ever needed for a handful of listings at a
+  // time, but the median-rent-by-neighborhood feature needs to GROUP BY it
+  // in SQL across every listing in a neighborhood, which live computation
+  // can't do. Set once, at crawl time, right after lat/lng are known —
+  // never recomputed after, since a listing's real-world location never
+  // changes. Null until backfilled for pre-existing rows (see
+  // scripts/backfillBoundaryNeighborhood.ts) or if the listing has no
+  // lat/lng at all.
+  boundaryNeighborhood String?
 
   matches              WatchMatch[]
   notificationListings NotificationListing[]
+  commuteCache         CommuteCache[]
 
   @@unique([source, externalId])
   @@index([city])
   @@index([firstSeenAt])
+  @@index([city, boundaryNeighborhood, bedrooms, bathrooms])
 }
 
 model WatchMatch {
@@ -115,12 +163,25 @@ model Notification {
 
 // Singleton row (id is always "singleton") — one set of personal preferences
 // for the whole app, not per-watch.
+// Deployment-wide defaults — not per-person. workAddress is the fallback
+// commute origin for browsing without a profile and for any profile that
+// hasn't set its own (see Profile.workAddress); alerts themselves go to
+// each Watch's own Profile.email, not anything here.
 model Settings {
   id            String   @id @default("singleton")
-  alertEmail    String?
   workAddress   String?
   workLatitude  Float?
   workLongitude Float?
+  // Real car/bike/transit routing via the Google Directions API costs money
+  // past its free tier — defaults to off so a fresh deploy (or a forgotten
+  // key in .env) can never silently rack up billing. Even with a
+  // GOOGLE_MAPS_API_KEY configured, every call site (commute.ts, both the
+  // browse/map feed and notification emails) must check this flag before
+  // using Google — otherwise it's the free OSRM/heuristic fallback. Turning
+  // this ON requires re-entering the app password (see /api/settings) —
+  // deliberately a bit more friction than a plain checkbox, since flipping it
+  // has a real dollar cost, not just a UI preference.
+  useGoogleDirections Boolean  @default(false)
   updatedAt     DateTime @updatedAt
 }
 
@@ -133,4 +194,32 @@ model NotificationListing {
   listing      Listing       @relation(fields: [listingId], references: [id], onDelete: Cascade)
 
   @@unique([notificationId, listingId])
+}
+
+// Caches a real (non-heuristic) car/bike/transit commute lookup per
+// listing+mode — those cost one external routing request each (a paid one
+// past the free tier for Google Directions), and a listing's coordinates
+// never change once geocoded, so the same lookup would otherwise get redone
+// every time it's re-sorted, re-paged, or viewed on the map. workLatitude/
+// workLongitude are stored alongside the result (not just the key) so a
+// stale entry from a since-changed work address is detected and recomputed
+// rather than silently served — see commuteCache.ts.
+model CommuteCache {
+  id            String   @id @default(cuid())
+  listingId     String
+  mode          String
+  workLatitude  Float
+  workLongitude Float
+  minutes       Int
+  distanceMiles Float
+  computedAt    DateTime @default(now())
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  // Work location is part of the key (not just checked after the fact) now
+  // that multiple people with different commute origins share this cache —
+  // otherwise two people alternating would keep overwriting each other's
+  // entry for the same (listing, mode), turning the cache into a coin flip
+  // instead of a real hit.
+  @@unique([listingId, mode, workLatitude, workLongitude])
 }

@@ -1,8 +1,9 @@
 import { getNearestStation, type NearestStation } from "@/server/geo/transitStations";
 import { getCarCommutesBatch, getTransitCommute, type CommuteEstimate } from "@/server/geo/commute";
+import { getCachedCommutes, saveCommutes } from "@/server/geo/commuteCache";
 import { defaultCommuteModeForCity } from "@/lib/commuteMode";
 
-type ListingForEnrichment = { city: string; latitude: number | null; longitude: number | null };
+type ListingForEnrichment = { id: string; city: string; latitude: number | null; longitude: number | null };
 export type WorkLocation = { latitude: number; longitude: number };
 
 export type NotificationExtras = {
@@ -17,9 +18,17 @@ const EMPTY_EXTRAS: NotificationExtras = { nearestStation: null, commute: null }
 // LA, transit elsewhere, matching defaultCommuteModeForCity) — added to
 // notification emails too, not just the browsable views. `work` is looked
 // up once per crawl cycle/digest flush by the caller, not per listing.
+// Backed by the same CommuteCache the browse/map feed uses (see
+// commuteCache.ts) — a notification fires once per listing per watch, but
+// the same listing is often also viewed on the feed/map, so sharing the
+// cache avoids a second real lookup for something already computed. useGoogle
+// gates whether a real (paid past free tier) Google Directions call is even
+// allowed — see Settings.useGoogleDirections; false means the free OSRM/
+// heuristic fallback is used instead, same as everywhere else in the app.
 export async function getNotificationExtras(
   listing: ListingForEnrichment,
   work: WorkLocation | null,
+  useGoogle: boolean,
 ): Promise<NotificationExtras> {
   if (listing.latitude == null || listing.longitude == null) return EMPTY_EXTRAS;
 
@@ -29,8 +38,17 @@ export async function getNotificationExtras(
   const mode = defaultCommuteModeForCity(listing.city);
   const from = { latitude: listing.latitude, longitude: listing.longitude };
 
-  const estimate =
-    mode === "car" ? (await getCarCommutesBatch([from], work))[0] : await getTransitCommute(listing.city, from, work);
+  const cached = await getCachedCommutes([listing.id], mode, work);
+  let estimate = cached.get(listing.id) ?? null;
+  if (!estimate) {
+    estimate =
+      mode === "car"
+        ? (await getCarCommutesBatch([from], work, useGoogle))[0]
+        : await getTransitCommute(listing.city, from, work, useGoogle);
+    if (estimate && !estimate.approximate) {
+      await saveCommutes([{ listingId: listing.id, mode, estimate }], work);
+    }
+  }
 
   return { nearestStation, commute: estimate ? { ...estimate, mode } : null };
 }

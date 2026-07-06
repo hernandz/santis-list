@@ -7,30 +7,32 @@ import {
   getCarCommutesBatch,
   getBikeCommutesBatch,
   getTransitCommute,
-  usesGoogleTransit,
+  usesGoogleRouting,
   mapWithConcurrency,
   COMMUTE_REQUEST_CONCURRENCY,
   type CommuteEstimate,
 } from "@/server/geo/commute";
+import { getCachedCommutes, saveCommutes } from "@/server/geo/commuteCache";
 
 export const dynamic = "force-dynamic";
 
 const PAGE_SIZE = 30;
 const MAP_LIMIT = 500;
-// Sorting/filtering by walk-to-train time can't happen in SQL — nearestStation
-// is computed live per listing, not a stored column — so that path fetches up
-// to this many matching rows, enriches all of them, then sorts/filters/paginates
-// in memory. Bounded so a huge result set can't blow up memory/latency.
-const TRANSIT_SORT_CAP = 2000;
-// Sorting by car commute needs the whole candidate pool's commute computed
-// *before* pagination (not just the final page), via one batched OSRM table
-// request. That request's coordinate list is bounded here — the public demo
-// routing server isn't meant for huge batches, so this trades a smaller
-// candidate pool for a request size that's actually reasonable to send it.
-// Also applied to transit whenever a Google Maps key is configured — real
-// transit lookups are one paid request per listing, not free/in-process like
-// the heuristic fallback, so a huge page (e.g. the map's ~500 pins) shouldn't
-// fire that many at once.
+// Sorting/filtering by walk-to-train time, train lines, or neighborhood can't
+// happen in SQL — each is computed live per listing, not a stored column —
+// so that path fetches up to this many matching rows, enriches all of them,
+// then sorts/filters/paginates in memory. All free/local computation (no
+// external API), so this is purely a memory/latency safety net, set well
+// above any realistic real listing count rather than a meaningful limit.
+const TRANSIT_SORT_CAP = 20000;
+// Only applies when a mode is actually using the paid Google Directions API
+// (see usesGoogleRouting) — real lookups cost money past the free tier, so a
+// huge page (e.g. the map's ~500 pins, or sorting by commute across
+// thousands of listings) shouldn't fire that many paid requests at once.
+// The free alternatives (OSRM for car/bike, a walk-to-station heuristic for
+// transit) have no such limit — OSRM's request is chunked instead (see
+// commute.ts) so it stays safe at any size, and the heuristic never leaves
+// the process at all.
 const COMMUTE_EXTERNAL_API_CAP = 300;
 // A second, further station is only worth surfacing if it's still a
 // reasonable walk — otherwise it's just noise.
@@ -73,12 +75,14 @@ function matchesNeighborhoods(
 // column — see watchMatchesEnrichedListing for the full, accurate check.
 function watchSqlConditions(watch: {
   city: string;
+  keyword: string | null;
   minPrice: number | null;
   maxPrice: number | null;
   minBedrooms: number | null;
   minBathrooms: number | null;
 }): Prisma.ListingWhereInput[] {
   const conditions: Prisma.ListingWhereInput[] = [{ city: watch.city }];
+  if (watch.keyword) conditions.push({ title: { contains: watch.keyword, mode: "insensitive" } });
   if (watch.minPrice != null) conditions.push({ price: { gte: watch.minPrice } });
   if (watch.maxPrice != null) conditions.push({ price: { lte: watch.maxPrice } });
   if (watch.minBedrooms != null) conditions.push({ bedrooms: { gte: watch.minBedrooms } });
@@ -89,6 +93,7 @@ function watchSqlConditions(watch: {
 type WatchLike = {
   city: string;
   neighborhoods: string[];
+  keyword: string | null;
   minPrice: number | null;
   maxPrice: number | null;
   minBedrooms: number | null;
@@ -103,6 +108,7 @@ function watchMatchesEnrichedListing(
   boundaryNeighborhood: string | null,
 ): boolean {
   if (listing.city !== watch.city) return false;
+  if (watch.keyword && !listing.title.toLowerCase().includes(watch.keyword.toLowerCase())) return false;
   if (watch.minPrice != null && (listing.price == null || listing.price < watch.minPrice)) return false;
   if (watch.maxPrice != null && (listing.price == null || listing.price > watch.maxPrice)) return false;
   if (watch.minBedrooms != null && (listing.bedrooms == null || listing.bedrooms < watch.minBedrooms)) return false;
@@ -124,7 +130,7 @@ async function countNotPlotted(
   sqlConditionsWithoutGeo: Prisma.ListingWhereInput[],
   adHocNeighborhoodNames: string[],
   scopeWatches: WatchLike[] | null,
-): Promise<number> {
+): Promise<{ count: number; truncated: boolean }> {
   const whereMissingLocation: Prisma.ListingWhereInput = {
     AND: [...sqlConditionsWithoutGeo, { OR: [{ latitude: null }, { longitude: null }] }],
   };
@@ -133,12 +139,21 @@ async function countNotPlotted(
     adHocNeighborhoodNames.length > 0 || (scopeWatches?.some((w) => w.neighborhoods.length > 0) ?? false);
 
   if (!needsNeighborhoodCheck) {
-    return prisma.listing.count({ where: whereMissingLocation });
+    const count = await prisma.listing.count({ where: whereMissingLocation });
+    return { count, truncated: false };
   }
 
-  const candidates = await prisma.listing.findMany({ where: whereMissingLocation, take: NOT_PLOTTED_CAP });
+  // The JS-filtered count below only ever looks at the first NOT_PLOTTED_CAP
+  // candidates — if the real total exceeds that, the count can undercount
+  // (some listing past the cap might have matched too) with no indication
+  // anything was cut off. This exact count is cheap (one indexed COUNT) and
+  // lets the caller surface that honestly instead of silently.
+  const [exactTotal, candidates] = await Promise.all([
+    prisma.listing.count({ where: whereMissingLocation }),
+    prisma.listing.findMany({ where: whereMissingLocation, take: NOT_PLOTTED_CAP }),
+  ]);
 
-  return candidates.filter((listing) => {
+  const count = candidates.filter((listing) => {
     if (adHocNeighborhoodNames.length > 0 && !matchesNeighborhoods(listing, null, adHocNeighborhoodNames)) {
       return false;
     }
@@ -148,6 +163,8 @@ async function countNotPlotted(
     }
     return true;
   }).length;
+
+  return { count, truncated: exactTotal > NOT_PLOTTED_CAP };
 }
 
 async function enrichListing<T extends Listing>(
@@ -156,11 +173,14 @@ async function enrichListing<T extends Listing>(
   T & { nearestStation: NearestStation | null; nextStation: NearestStation | null; boundaryNeighborhood: string | null }
 > {
   const hasGeo = listing.latitude != null && listing.longitude != null;
+  // boundaryNeighborhood is stored on the row now (set once at crawl time —
+  // see the schema comment) — only fall back to a live lookup for the rare
+  // listing that has geo but hasn't been backfilled/classified yet.
   const [nearestStations, boundaryNeighborhood] = await Promise.all([
     hasGeo
       ? getNearestStations(listing.city, listing.latitude!, listing.longitude!, NEXT_STATION_CANDIDATE_POOL)
       : [],
-    hasGeo ? getNeighborhoodForPoint(listing.city, listing.latitude!, listing.longitude!) : null,
+    listing.boundaryNeighborhood ?? (hasGeo ? getNeighborhoodForPoint(listing.city, listing.latitude!, listing.longitude!) : null),
   ]);
 
   const [nearestStation, ...rest] = nearestStations;
@@ -177,6 +197,58 @@ async function enrichListing<T extends Listing>(
   return { ...listing, nearestStation: nearestStation ?? null, nextStation, boundaryNeighborhood };
 }
 
+// Shared by attachCommute/attachAllCommutes below. Checks the persistent
+// CommuteCache first (see commuteCache.ts) — a listing's coordinates never
+// change once geocoded, so the same (listing, mode) pair only ever needs a
+// real external lookup once. Only the cache-miss subset is sent to the live
+// batch fn, capped at `cap` rows (null = uncapped, for the free heuristic
+// transit fallback, which costs nothing external). Because the cap applies
+// to the uncached subset rather than the whole candidate pool, repeated
+// requests for the same pool (re-sorting, re-paging, reopening the map)
+// progressively cover more of it for free instead of always re-spending the
+// live-request budget on the same leading slice.
+async function resolveCommutes<T extends Listing>(
+  listings: T[],
+  mode: "car" | "bike" | "transit",
+  work: { latitude: number; longitude: number },
+  cap: number | null,
+  useGoogle: boolean,
+): Promise<Map<string, CommuteEstimate | null>> {
+  const cached = await getCachedCommutes(
+    listings.map((l) => l.id),
+    mode,
+    work,
+  );
+  const uncached = listings.filter((l) => !cached.has(l.id));
+  const live = cap != null ? uncached.slice(0, cap) : uncached;
+
+  const commutes =
+    mode === "car"
+      ? await getCarCommutesBatch(
+          live.map((l) => ({ latitude: l.latitude!, longitude: l.longitude! })),
+          work,
+          useGoogle,
+        )
+      : mode === "bike"
+        ? await getBikeCommutesBatch(
+            live.map((l) => ({ latitude: l.latitude!, longitude: l.longitude! })),
+            work,
+            useGoogle,
+          )
+        : await mapWithConcurrency(live, COMMUTE_REQUEST_CONCURRENCY, (l) =>
+            getTransitCommute(l.city, { latitude: l.latitude!, longitude: l.longitude! }, work, useGoogle),
+          );
+
+  const freshEntries = live
+    .map((l, i) => ({ listingId: l.id, mode, estimate: commutes[i] }))
+    .filter((e): e is { listingId: string; mode: typeof mode; estimate: CommuteEstimate } => e.estimate != null);
+  await saveCommutes(freshEntries, work);
+
+  const result = new Map<string, CommuteEstimate | null>(cached);
+  live.forEach((l, i) => result.set(l.id, commutes[i]));
+  return result;
+}
+
 // Only computed for the current page of results (never the whole candidate
 // pool) — car/bike commutes each cost one batched external routing request
 // per page, and there's no reason to spend that on rows the user isn't
@@ -185,65 +257,37 @@ async function attachCommute<T extends Listing>(
   listings: T[],
   mode: "car" | "bike" | "transit",
   work: { latitude: number; longitude: number },
+  useGoogle: boolean,
 ): Promise<(T & { commute: CommuteEstimate | null })[]> {
   const withGeo = listings.filter((l) => l.latitude != null && l.longitude != null);
 
-  if (mode === "car" || mode === "bike") {
-    const batchFn = mode === "car" ? getCarCommutesBatch : getBikeCommutesBatch;
-    const commutes = await batchFn(
-      withGeo.map((l) => ({ latitude: l.latitude!, longitude: l.longitude! })),
-      work,
-    );
-    const byId = new Map(withGeo.map((l, i) => [l.id, commutes[i]]));
-    return listings.map((l) => ({ ...l, commute: byId.get(l.id) ?? null }));
-  }
-
-  // Each listing's own city (not a single page-level filter) — results can
-  // span cities when no city filter is active. Only capped when transit
-  // means a real paid Google lookup per listing — the free heuristic
-  // fallback has no reason to limit how many it covers.
-  const transitBatch = usesGoogleTransit() ? withGeo.slice(0, COMMUTE_EXTERNAL_API_CAP) : withGeo;
-  const commutes = await mapWithConcurrency(transitBatch, COMMUTE_REQUEST_CONCURRENCY, (l) =>
-    getTransitCommute(l.city, { latitude: l.latitude!, longitude: l.longitude! }, work),
-  );
-  const byId = new Map(transitBatch.map((l, i) => [l.id, commutes[i]]));
+  // Only capped when this mode is actually using the paid Google API — the
+  // free alternatives (OSRM for car/bike, the heuristic for transit) have no
+  // reason to limit how many listings they cover.
+  const cap = usesGoogleRouting(useGoogle) ? COMMUTE_EXTERNAL_API_CAP : null;
+  const byId = await resolveCommutes(withGeo, mode, work, cap, useGoogle);
   return listings.map((l) => ({ ...l, commute: byId.get(l.id) ?? null }));
 }
 
 // Used by the map view, which shows every mode per listing at once rather
-// than letting the user pick one. Car/bike each need one batched OSRM
-// request, so each is capped (see COMMUTE_EXTERNAL_API_CAP) — a map of ~500
-// pins is more than either request is meant for. Transit is capped the same
-// way only when it's a real per-listing Google lookup, not the free
-// in-process heuristic.
+// than letting the user pick one. Each is capped the same way as attachCommute
+// above — only when it's actually the paid Google API, not the free
+// OSRM/heuristic fallbacks.
 async function attachAllCommutes<T extends Listing>(
   listings: T[],
   work: { latitude: number; longitude: number },
+  useGoogle: boolean,
 ): Promise<
   (T & { commuteCar: CommuteEstimate | null; commuteBike: CommuteEstimate | null; commuteTransit: CommuteEstimate | null })[]
 > {
   const withGeo = listings.filter((l) => l.latitude != null && l.longitude != null);
-  const carBatch = withGeo.slice(0, COMMUTE_EXTERNAL_API_CAP);
-  const bikeBatch = withGeo.slice(0, COMMUTE_EXTERNAL_API_CAP);
-  const transitBatch = usesGoogleTransit() ? withGeo.slice(0, COMMUTE_EXTERNAL_API_CAP) : withGeo;
+  const cap = usesGoogleRouting(useGoogle) ? COMMUTE_EXTERNAL_API_CAP : null;
 
-  const [carCommutes, bikeCommutes, transitCommutes] = await Promise.all([
-    getCarCommutesBatch(
-      carBatch.map((l) => ({ latitude: l.latitude!, longitude: l.longitude! })),
-      work,
-    ),
-    getBikeCommutesBatch(
-      bikeBatch.map((l) => ({ latitude: l.latitude!, longitude: l.longitude! })),
-      work,
-    ),
-    mapWithConcurrency(transitBatch, COMMUTE_REQUEST_CONCURRENCY, (l) =>
-      getTransitCommute(l.city, { latitude: l.latitude!, longitude: l.longitude! }, work),
-    ),
+  const [carById, bikeById, transitById] = await Promise.all([
+    resolveCommutes(withGeo, "car", work, cap, useGoogle),
+    resolveCommutes(withGeo, "bike", work, cap, useGoogle),
+    resolveCommutes(withGeo, "transit", work, cap, useGoogle),
   ]);
-
-  const carById = new Map(carBatch.map((l, i) => [l.id, carCommutes[i]]));
-  const bikeById = new Map(bikeBatch.map((l, i) => [l.id, bikeCommutes[i]]));
-  const transitById = new Map(transitBatch.map((l, i) => [l.id, transitCommutes[i]]));
 
   return listings.map((l) => ({
     ...l,
@@ -257,8 +301,72 @@ async function attachCommuteAny<T extends Listing>(
   listings: T[],
   mode: "car" | "bike" | "transit" | "both",
   work: { latitude: number; longitude: number },
+  useGoogle: boolean,
 ) {
-  return mode === "both" ? attachAllCommutes(listings, work) : attachCommute(listings, mode, work);
+  return mode === "both"
+    ? attachAllCommutes(listings, work, useGoogle)
+    : attachCommute(listings, mode, work, useGoogle);
+}
+
+function medianRentGroupKey(city: string, neighborhood: string, bedrooms: number, bathrooms: number): string {
+  return `${city}|${neighborhood}|${bedrooms}|${bathrooms}`;
+}
+
+// Real median across every listing (not just what's on screen) sharing the
+// same city + verified neighborhood + bed/bath combo — one batched query
+// (via unnest, not one query per distinct group) covering every group
+// present on the current page at once. Only ever computed for listings
+// with all four fields known; a listing missing any of them (no verified
+// boundaryNeighborhood, no bed/bath count) just doesn't get a median.
+async function getMedianRents(
+  groups: { city: string; neighborhood: string; bedrooms: number; bathrooms: number }[],
+): Promise<Map<string, number>> {
+  if (groups.length === 0) return new Map();
+
+  const rows = await prisma.$queryRaw<{ city: string; neighborhood: string; bedrooms: number; bathrooms: number; median: number }[]>`
+    SELECT g.city, g.neighborhood, g.bedrooms, g.bathrooms,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY l.price) AS median
+    FROM unnest(
+      ${groups.map((g) => g.city)}::text[],
+      ${groups.map((g) => g.neighborhood)}::text[],
+      ${groups.map((g) => g.bedrooms)}::int[],
+      ${groups.map((g) => g.bathrooms)}::float[]
+    ) AS g(city, neighborhood, bedrooms, bathrooms)
+    JOIN "Listing" l
+      ON l.city = g.city
+      AND l."boundaryNeighborhood" = g.neighborhood
+      AND l.bedrooms = g.bedrooms
+      AND l.bathrooms = g.bathrooms
+    WHERE l.price IS NOT NULL
+    GROUP BY g.city, g.neighborhood, g.bedrooms, g.bathrooms
+  `;
+
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    map.set(medianRentGroupKey(row.city, row.neighborhood, row.bedrooms, row.bathrooms), Number(row.median));
+  }
+  return map;
+}
+
+async function attachMedianRent<T extends Listing>(listings: T[]): Promise<(T & { medianRent: number | null })[]> {
+  const seen = new Set<string>();
+  const groups: { city: string; neighborhood: string; bedrooms: number; bathrooms: number }[] = [];
+  for (const l of listings) {
+    if (l.boundaryNeighborhood == null || l.bedrooms == null || l.bathrooms == null) continue;
+    const key = medianRentGroupKey(l.city, l.boundaryNeighborhood, l.bedrooms, l.bathrooms);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    groups.push({ city: l.city, neighborhood: l.boundaryNeighborhood, bedrooms: l.bedrooms, bathrooms: l.bathrooms });
+  }
+
+  const medians = await getMedianRents(groups);
+  return listings.map((l) => {
+    if (l.boundaryNeighborhood == null || l.bedrooms == null || l.bathrooms == null) {
+      return { ...l, medianRent: null };
+    }
+    const key = medianRentGroupKey(l.city, l.boundaryNeighborhood, l.bedrooms, l.bathrooms);
+    return { ...l, medianRent: medians.get(key) ?? null };
+  });
 }
 
 function comparePrice(a: Listing, b: Listing, direction: "asc" | "desc"): number {
@@ -281,6 +389,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
 
   const city = searchParams.get("city") || undefined;
+  const keyword = searchParams.get("keyword") || undefined;
   const neighborhood = searchParams.get("neighborhood") || undefined;
   const neighborhoods = (searchParams.get("neighborhoods") ?? "")
     .split(",")
@@ -309,6 +418,7 @@ export async function GET(request: Request) {
       ? commuteModeParam
       : null;
   const workSettings = commuteMode ? await prisma.settings.findUnique({ where: { id: "singleton" } }) : null;
+  const useGoogle = workSettings?.useGoogleDirections ?? false;
   const work =
     workSettings?.workLatitude != null && workSettings?.workLongitude != null
       ? { latitude: workSettings.workLatitude, longitude: workSettings.workLongitude }
@@ -325,6 +435,7 @@ export async function GET(request: Request) {
   // applied as a post-enrichment filter below instead.
   const conditions: Prisma.ListingWhereInput[] = [];
   if (city) conditions.push({ city });
+  if (keyword) conditions.push({ title: { contains: keyword, mode: "insensitive" } });
   if (minPrice != null) conditions.push({ price: { gte: minPrice } });
   if (maxPrice != null) conditions.push({ price: { lte: maxPrice } });
   if (minBedrooms != null) conditions.push({ bedrooms: { gte: minBedrooms } });
@@ -388,7 +499,7 @@ export async function GET(request: Request) {
     const skip = forMap ? 0 : (page - 1) * PAGE_SIZE;
     const take = forMap ? MAP_LIMIT : PAGE_SIZE;
 
-    const [total, listings, notPlotted] = await Promise.all([
+    const [total, listings, notPlottedResult] = await Promise.all([
       prisma.listing.count({ where }),
       prisma.listing.findMany({
         where,
@@ -402,16 +513,23 @@ export async function GET(request: Request) {
 
     const listingsEnriched = await Promise.all(listings.map(enrichListing));
     const listingsWithCommute =
-      commuteMode && work ? await attachCommuteAny(listingsEnriched, commuteMode, work) : listingsEnriched;
+      commuteMode && work ? await attachCommuteAny(listingsEnriched, commuteMode, work, useGoogle) : listingsEnriched;
+    const listingsWithMedian = await attachMedianRent(listingsWithCommute);
 
     return NextResponse.json(
       {
-        listings: listingsWithCommute,
+        listings: listingsWithMedian,
         page,
         pageSize: forMap ? MAP_LIMIT : PAGE_SIZE,
         total,
         totalPages: forMap ? 1 : Math.max(1, Math.ceil(total / PAGE_SIZE)),
-        ...(forMap ? { totalRegardlessOfLocation: total + (notPlotted ?? 0), notPlotted: notPlotted ?? 0 } : {}),
+        ...(forMap
+          ? {
+              totalRegardlessOfLocation: total + (notPlottedResult?.count ?? 0),
+              notPlotted: notPlottedResult?.count ?? 0,
+              notPlottedTruncated: notPlottedResult?.truncated ?? false,
+            }
+          : {}),
       },
       { headers: { "Cache-Control": "no-store" } },
     );
@@ -419,12 +537,12 @@ export async function GET(request: Request) {
 
   // Transit-aware path: pull a capped, broad set matching the SQL-level filters,
   // enrich all of them with live nearestStation data, then apply the walk-time
-  // filter/sort and paginate in memory.
-  const usesExternalCommuteApi =
-    sortingByCommute &&
-    (commuteMode === "car" || commuteMode === "bike" || (commuteMode === "transit" && usesGoogleTransit()));
-  const candidateCap = usesExternalCommuteApi ? COMMUTE_EXTERNAL_API_CAP : TRANSIT_SORT_CAP;
-  const [whereTotal, candidates, notPlotted] = await Promise.all([
+  // filter/sort and paginate in memory. Tightly capped only when sorting by
+  // commute AND actually paying for it (Google) — otherwise (including
+  // sort-by-commute on the free OSRM/heuristic path) the much looser
+  // TRANSIT_SORT_CAP applies, so sort genuinely covers the whole result set.
+  const candidateCap = sortingByCommute && usesGoogleRouting(useGoogle) ? COMMUTE_EXTERNAL_API_CAP : TRANSIT_SORT_CAP;
+  const [whereTotal, candidates, notPlottedResult] = await Promise.all([
     prisma.listing.count({ where }),
     prisma.listing.findMany({
       where,
@@ -442,7 +560,7 @@ export async function GET(request: Request) {
   // commute first" would only ever reorder within one page. Otherwise leave
   // commute unset here — it's attached to just the final page below instead.
   const enriched = sortingByCommute
-    ? await attachCommute(enrichedBase, commuteMode!, work!)
+    ? await attachCommute(enrichedBase, commuteMode!, work!, useGoogle)
     : enrichedBase.map((l) => ({ ...l, commute: null as CommuteEstimate | null }));
 
   let filtered = enriched;
@@ -487,17 +605,24 @@ export async function GET(request: Request) {
   // sorting by commute — only needs attaching here for the final page when
   // commute is just being displayed, not sorted by.
   const pagedWithCommute =
-    !sortingByCommute && commuteMode && work ? await attachCommuteAny(paged, commuteMode, work) : paged;
+    !sortingByCommute && commuteMode && work ? await attachCommuteAny(paged, commuteMode, work, useGoogle) : paged;
+  const pagedWithMedian = await attachMedianRent(pagedWithCommute);
 
   return NextResponse.json(
     {
-      listings: pagedWithCommute,
+      listings: pagedWithMedian,
       page,
       pageSize: forMap ? MAP_LIMIT : PAGE_SIZE,
       total,
       totalPages: forMap ? 1 : Math.max(1, Math.ceil(total / PAGE_SIZE)),
       truncated,
-      ...(forMap ? { totalRegardlessOfLocation: total + (notPlotted ?? 0), notPlotted: notPlotted ?? 0 } : {}),
+      ...(forMap
+        ? {
+            totalRegardlessOfLocation: total + (notPlottedResult?.count ?? 0),
+            notPlotted: notPlottedResult?.count ?? 0,
+            notPlottedTruncated: notPlottedResult?.truncated ?? false,
+          }
+        : {}),
     },
     { headers: { "Cache-Control": "no-store" } },
   );

@@ -2,10 +2,7 @@
 // Safe to import from client components — no server-only dependencies.
 export const SUPPORTED_CITIES = [
   { value: "newyork", label: "New York City" },
-  // Hidden from UI dropdowns for now (see VISIBLE_CITIES) — still fully
-  // supported by the crawler/matching/map/transit code, and kept here so
-  // existing SF data and validation keep working.
-  { value: "sfbay", label: "SF Bay Area", hidden: true },
+  { value: "sfbay", label: "SF Bay Area" },
   { value: "losangeles", label: "Los Angeles" },
 ] as const;
 

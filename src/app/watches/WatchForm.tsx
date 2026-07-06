@@ -23,12 +23,18 @@ export type WatchFormValues = {
   city: string;
   subareas: string[];
   neighborhoods: string[];
+  keyword: string;
   minPrice: string;
   maxPrice: string;
   minBedrooms: string;
   minBathrooms: string;
   notifyFrequency: "IMMEDIATE" | "HOURLY" | "DAILY";
   isActive: boolean;
+  // Not stored fields themselves — see toPayload/resolveProfileId. alertsEnabled
+  // just drives which of {alertName, alertEmail} vs {removeAlerts} gets sent.
+  alertsEnabled: boolean;
+  alertName: string;
+  alertEmail: string;
 };
 
 const empty: WatchFormValues = {
@@ -36,12 +42,16 @@ const empty: WatchFormValues = {
   city: "newyork",
   subareas: [],
   neighborhoods: [],
+  keyword: "",
   minPrice: "",
   maxPrice: "",
   minBedrooms: "",
   minBathrooms: "",
   notifyFrequency: "IMMEDIATE",
   isActive: true,
+  alertsEnabled: false,
+  alertName: "",
+  alertEmail: "",
 };
 
 function toPayload(values: WatchFormValues) {
@@ -50,12 +60,16 @@ function toPayload(values: WatchFormValues) {
     city: values.city,
     subareas: values.subareas,
     neighborhoods: values.neighborhoods,
+    keyword: values.keyword === "" ? null : values.keyword,
     minPrice: values.minPrice === "" ? null : Number(values.minPrice),
     maxPrice: values.maxPrice === "" ? null : Number(values.maxPrice),
     minBedrooms: values.minBedrooms === "" ? null : Number(values.minBedrooms),
     minBathrooms: values.minBathrooms === "" ? null : Number(values.minBathrooms),
     notifyFrequency: values.notifyFrequency,
     isActive: values.isActive,
+    ...(values.alertsEnabled
+      ? { alertName: values.alertName.trim(), alertEmail: values.alertEmail.trim() }
+      : { removeAlerts: true }),
   };
 }
 
@@ -278,6 +292,23 @@ export function WatchForm({
   const [values, setValues] = useState<WatchFormValues>({ ...empty, ...initialValues });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Convenience only, not an identity/session — prefills name/email from
+  // whatever this browser last used to set up alerts, so setting up a
+  // second or third alerting search doesn't mean retyping the same email.
+  // Never overrides values already loaded for an existing watch's own alerts.
+  useEffect(() => {
+    if (initialValues?.alertEmail) return;
+    const lastName = localStorage.getItem("watch:lastAlertName");
+    const lastEmail = localStorage.getItem("watch:lastAlertEmail");
+    if (lastName || lastEmail) {
+      // Reading localStorage (an external system unavailable during SSR) is
+      // exactly the documented exception to "don't setState in an effect".
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setValues((prev) => ({ ...prev, alertName: lastName ?? prev.alertName, alertEmail: lastEmail ?? prev.alertEmail }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const areas = useCraigslistAreas(values.city);
   const boundaries = useNeighborhoodBoundaries(values.city);
 
@@ -332,8 +363,14 @@ export function WatchForm({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setSubmitting(true);
     setError(null);
+
+    if (values.alertsEnabled && (!values.alertName.trim() || !values.alertEmail.trim())) {
+      setError("Name and email are required to turn on alerts for this search.");
+      return;
+    }
+
+    setSubmitting(true);
 
     const res = await fetch(watchId ? `/api/watches/${watchId}` : "/api/watches", {
       method: watchId ? "PATCH" : "POST",
@@ -347,6 +384,11 @@ export function WatchForm({
       const body = await res.json().catch(() => ({}));
       setError(body.error ? JSON.stringify(body.error) : "Something went wrong");
       return;
+    }
+
+    if (values.alertsEnabled) {
+      localStorage.setItem("watch:lastAlertName", values.alertName.trim());
+      localStorage.setItem("watch:lastAlertEmail", values.alertEmail.trim());
     }
 
     router.push("/watches");
@@ -407,6 +449,16 @@ export function WatchForm({
         onChange={(next) => set("neighborhoods", next)}
       />
 
+      <label className="flex flex-col gap-1 text-sm">
+        Keyword (optional — matches listing titles containing this text)
+        <input
+          className="border rounded px-2 py-1 border-black/15 dark:border-white/20 bg-transparent"
+          placeholder="e.g. parking, pool"
+          value={values.keyword}
+          onChange={(e) => set("keyword", e.target.value)}
+        />
+      </label>
+
       <div className="grid grid-cols-2 gap-4">
         <label className="flex flex-col gap-1 text-sm">
           Min price
@@ -450,18 +502,56 @@ export function WatchForm({
         </label>
       </div>
 
-      <label className="flex flex-col gap-1 text-sm">
-        Notify me
-        <select
-          className="border rounded px-2 py-1 border-black/15 dark:border-white/20 bg-transparent"
-          value={values.notifyFrequency}
-          onChange={(e) => set("notifyFrequency", e.target.value as WatchFormValues["notifyFrequency"])}
-        >
-          <option value="IMMEDIATE">Immediately, per listing</option>
-          <option value="HOURLY">Hourly digest</option>
-          <option value="DAILY">Daily digest</option>
-        </select>
-      </label>
+      <div className="border border-black/10 dark:border-white/15 rounded-lg p-4 flex flex-col gap-3">
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={values.alertsEnabled}
+            onChange={(e) => set("alertsEnabled", e.target.checked)}
+          />
+          Get email alerts for this search
+        </label>
+        <p className="text-xs text-black/50 dark:text-white/50">
+          Leave unchecked to just crawl and browse this search with no emails — no name/email needed for that.
+        </p>
+
+        {values.alertsEnabled && (
+          <>
+            <div className="grid grid-cols-2 gap-4">
+              <label className="flex flex-col gap-1 text-sm">
+                Your name
+                <input
+                  className="border rounded px-2 py-1 border-black/15 dark:border-white/20 bg-transparent"
+                  value={values.alertName}
+                  onChange={(e) => set("alertName", e.target.value)}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                Your email
+                <input
+                  type="email"
+                  className="border rounded px-2 py-1 border-black/15 dark:border-white/20 bg-transparent"
+                  value={values.alertEmail}
+                  onChange={(e) => set("alertEmail", e.target.value)}
+                />
+              </label>
+            </div>
+
+            <label className="flex flex-col gap-1 text-sm">
+              Notify me
+              <select
+                className="border rounded px-2 py-1 border-black/15 dark:border-white/20 bg-transparent"
+                value={values.notifyFrequency}
+                onChange={(e) => set("notifyFrequency", e.target.value as WatchFormValues["notifyFrequency"])}
+              >
+                <option value="IMMEDIATE">Immediately, per listing</option>
+                <option value="HOURLY">Hourly digest</option>
+                <option value="DAILY">Daily digest</option>
+              </select>
+            </label>
+          </>
+        )}
+      </div>
 
       <label className="flex items-center gap-2 text-sm">
         <input

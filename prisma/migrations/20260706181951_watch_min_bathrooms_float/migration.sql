@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Watch" ALTER COLUMN "minBathrooms" SET DATA TYPE DOUBLE PRECISION;

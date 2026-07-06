@@ -21,7 +21,21 @@ type Point = { latitude: number; longitude: number };
 // separate community-run demo) hosts genuinely distinct profile instances
 // (routed-car, routed-bike) confirmed to give different routes/durations for
 // the same two points.
-async function getOsrmCommutesBatch(baseUrl: string, from: Point[], to: Point): Promise<(CommuteEstimate | null)[]> {
+//
+// One request's coordinate list is capped (not the overall candidate pool) —
+// since this path has no per-request dollar cost, sort-by-commute is allowed
+// to cover every matching listing when Google isn't in use (see
+// api/listings/route.ts), which for a few thousand rows means a few
+// thousand coordinates. A single URL that long risks tripping web server/
+// proxy URL-length limits (or just OSRM's own demo-server patience), so it's
+// chunked into several requests instead of one giant one.
+const OSRM_BATCH_SIZE = 200;
+
+async function getOsrmCommutesBatchChunk(
+  baseUrl: string,
+  from: Point[],
+  to: Point,
+): Promise<(CommuteEstimate | null)[]> {
   if (from.length === 0) return [];
 
   const coords = [...from.map((p) => `${p.longitude},${p.latitude}`), `${to.longitude},${to.latitude}`].join(";");
@@ -48,8 +62,30 @@ async function getOsrmCommutesBatch(baseUrl: string, from: Point[], to: Point): 
   }
 }
 
+async function getOsrmCommutesBatch(baseUrl: string, from: Point[], to: Point): Promise<(CommuteEstimate | null)[]> {
+  if (from.length === 0) return [];
+
+  const chunks: Point[][] = [];
+  for (let i = 0; i < from.length; i += OSRM_BATCH_SIZE) chunks.push(from.slice(i, i + OSRM_BATCH_SIZE));
+
+  const chunkResults = await mapWithConcurrency(chunks, COMMUTE_REQUEST_CONCURRENCY, (chunk) =>
+    getOsrmCommutesBatchChunk(baseUrl, chunk, to),
+  );
+  return chunkResults.flat();
+}
+
 function hasGoogleMapsKey(): boolean {
   return Boolean(process.env.GOOGLE_MAPS_API_KEY);
+}
+
+// A configured key alone is NOT enough to use Google — every call site below
+// also requires the caller to pass an explicit `useGoogle` flag, sourced from
+// Settings.useGoogleDirections (default false; see the schema comment).
+// Real Directions calls cost money past the free tier, so "an env var
+// happens to be set" must never be sufficient on its own to start spending —
+// the caller has to have actually read the toggle and found it on.
+function shouldUseGoogle(useGoogle: boolean): boolean {
+  return useGoogle && hasGoogleMapsKey();
 }
 
 // Directions has no multi-origin batch endpoint (unlike OSRM's table
@@ -116,15 +152,15 @@ async function getGoogleDirectionsCommute(
   }
 }
 
-export function getCarCommutesBatch(from: Point[], to: Point): Promise<(CommuteEstimate | null)[]> {
-  if (hasGoogleMapsKey()) {
+export function getCarCommutesBatch(from: Point[], to: Point, useGoogle: boolean): Promise<(CommuteEstimate | null)[]> {
+  if (shouldUseGoogle(useGoogle)) {
     return mapWithConcurrency(from, COMMUTE_REQUEST_CONCURRENCY, (p) => getGoogleDirectionsCommute(p, to, "driving"));
   }
   return getOsrmCommutesBatch("https://router.project-osrm.org", from, to);
 }
 
-export function getBikeCommutesBatch(from: Point[], to: Point): Promise<(CommuteEstimate | null)[]> {
-  if (hasGoogleMapsKey()) {
+export function getBikeCommutesBatch(from: Point[], to: Point, useGoogle: boolean): Promise<(CommuteEstimate | null)[]> {
+  if (shouldUseGoogle(useGoogle)) {
     return mapWithConcurrency(from, COMMUTE_REQUEST_CONCURRENCY, (p) => getGoogleDirectionsCommute(p, to, "bicycling"));
   }
   return getOsrmCommutesBatch("https://routing.openstreetmap.de/routed-bike", from, to);
@@ -152,17 +188,25 @@ async function getHeuristicTransitCommute(city: string, from: Point, to: Point):
   };
 }
 
-export function usesGoogleTransit(): boolean {
-  return hasGoogleMapsKey();
+// Same check for every mode (car/bike/transit all gate on the same
+// key+toggle combination) — named generically since it's used to decide
+// candidate-pool caps for all three in api/listings/route.ts, not just transit.
+export function usesGoogleRouting(useGoogle: boolean): boolean {
+  return shouldUseGoogle(useGoogle);
 }
 
 // Real transit routing (actual schedules/transfers) via the Directions API.
 // Google's free tier is 10,000 requests/month — fine for a personal tool's
 // actual browsing volume, but callers should still avoid firing this for
-// large candidate pools (see usesGoogleTransit + the caps in
+// large candidate pools (see usesGoogleRouting + the caps in
 // api/listings/route.ts) since it's a real per-request cost past that.
-export async function getTransitCommute(city: string, from: Point, to: Point): Promise<CommuteEstimate | null> {
-  const google = await getGoogleDirectionsCommute(from, to, "transit");
+export async function getTransitCommute(
+  city: string,
+  from: Point,
+  to: Point,
+  useGoogle: boolean,
+): Promise<CommuteEstimate | null> {
+  const google = shouldUseGoogle(useGoogle) ? await getGoogleDirectionsCommute(from, to, "transit") : null;
   if (google) return google;
   return getHeuristicTransitCommute(city, from, to);
 }

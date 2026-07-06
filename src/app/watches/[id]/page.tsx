@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export default async function EditWatchPage(props: PageProps<"/watches/[id]">) {
   const { id } = await props.params;
-  const watch = await prisma.watch.findUnique({ where: { id } });
+  const watch = await prisma.watch.findUnique({ where: { id }, include: { profile: true } });
   if (!watch) notFound();
 
   return (
@@ -19,12 +19,16 @@ export default async function EditWatchPage(props: PageProps<"/watches/[id]">) {
           city: watch.city,
           subareas: watch.subareas,
           neighborhoods: watch.neighborhoods,
+          keyword: watch.keyword ?? "",
           minPrice: watch.minPrice?.toString() ?? "",
           maxPrice: watch.maxPrice?.toString() ?? "",
           minBedrooms: watch.minBedrooms?.toString() ?? "",
           minBathrooms: watch.minBathrooms?.toString() ?? "",
           notifyFrequency: watch.notifyFrequency,
           isActive: watch.isActive,
+          alertsEnabled: watch.profile != null,
+          alertName: watch.profile?.name ?? "",
+          alertEmail: watch.profile?.email ?? "",
         }}
       />
     </div>

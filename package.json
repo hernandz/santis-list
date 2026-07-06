@@ -10,7 +10,8 @@
     "seed": "tsx scripts/seed.ts",
     "crawl:once": "tsx scripts/crawl-once.ts",
     "digests:once": "tsx scripts/flush-digests-once.ts",
-    "backfill:geo": "tsx scripts/backfill-geo.ts"
+    "backfill:geo": "tsx scripts/backfill-geo.ts",
+    "backfill:boundary-neighborhood": "tsx scripts/backfill-boundary-neighborhood.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",

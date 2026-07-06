@@ -35,6 +35,7 @@ export default function MapPage() {
   const [loading, setLoading] = useState(true);
   const [workLocation, setWorkLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [notPlotted, setNotPlotted] = useState(0);
+  const [notPlottedTruncated, setNotPlottedTruncated] = useState(false);
   const [totalRegardlessOfLocation, setTotalRegardlessOfLocation] = useState(0);
 
   useEffect(() => {
@@ -156,6 +157,7 @@ export default function MapPage() {
         setListings(body.listings ?? []);
         setNotPlotted(body.notPlotted ?? 0);
         setTotalRegardlessOfLocation(body.totalRegardlessOfLocation ?? 0);
+        setNotPlottedTruncated(body.notPlottedTruncated ?? false);
         setLoading(false);
       }
     }
@@ -187,6 +189,7 @@ export default function MapPage() {
           <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
             {notPlotted} out of {totalRegardlessOfLocation} crawled listings are not plotted because no
             location was provided.
+            {notPlottedTruncated && " (this count is itself capped and may be an undercount.)"}
           </p>
         )}
       </div>

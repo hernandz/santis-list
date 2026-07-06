@@ -69,12 +69,19 @@ async function politeFetch(url: string, attempt = 1): Promise<string> {
   } catch (err) {
     if (err instanceof ListingGoneError) throw err;
 
-    recordFailure();
     if (attempt < 3) {
       const backoffMs = 2000 * attempt + Math.floor(Math.random() * 1000);
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
       return politeFetch(url, attempt + 1);
     }
+    // Only counts toward the circuit breaker once this URL's own retries are
+    // fully exhausted. Previously recordFailure() fired on every individual
+    // attempt, so one URL failing 3 times in a row (normal for a brief
+    // transient blip) could exhaust the whole consecutive-failure budget by
+    // itself and open a 15-minute circuit, even though nothing was actually
+    // wrong beyond that one request. Now it takes 3 separate requests, each
+    // having exhausted their own retries, to trip the breaker.
+    recordFailure();
     throw err;
   }
 }

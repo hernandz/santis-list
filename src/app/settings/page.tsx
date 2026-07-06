@@ -5,15 +5,20 @@ import { ClearCacheButton } from "./ClearCacheButton";
 import { applyTheme, getStoredTheme, type Theme } from "@/lib/theme";
 
 type Settings = {
-  alertEmail: string | null;
   workAddress: string | null;
   workLatitude: number | null;
   workLongitude: number | null;
+  useGoogleDirections: boolean;
 };
 
 type AddressSuggestion = { latitude: number; longitude: number; displayName: string };
 
-const empty: Settings = { alertEmail: null, workAddress: null, workLatitude: null, workLongitude: null };
+const empty: Settings = {
+  workAddress: null,
+  workLatitude: null,
+  workLongitude: null,
+  useGoogleDirections: false,
+};
 
 export default function SettingsPage() {
   const [values, setValues] = useState<Settings>(empty);
@@ -24,6 +29,7 @@ export default function SettingsPage() {
   const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
   const [addressDirty, setAddressDirty] = useState(false);
   const [confirmedAddress, setConfirmedAddress] = useState<AddressSuggestion | null>(null);
+  const [confirmPassword, setConfirmPassword] = useState("");
   // Starts as "auto" to match the server-rendered markup exactly (no access
   // to localStorage during SSR) — corrected right after mount, before the
   // user could plausibly interact with it.
@@ -90,8 +96,9 @@ export default function SettingsPage() {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        alertEmail: values.alertEmail?.trim() || null,
         workAddress: values.workAddress?.trim() || null,
+        useGoogleDirections: values.useGoogleDirections,
+        ...(values.useGoogleDirections ? { confirmPassword } : {}),
       }),
     });
 
@@ -105,6 +112,7 @@ export default function SettingsPage() {
 
     const body = await res.json();
     setValues(body);
+    setConfirmPassword("");
     setSaved(true);
   }
 
@@ -115,27 +123,14 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-xl font-semibold">Settings</h1>
         <p className="text-sm text-black/60 dark:text-white/60">
-          Personal preferences used across the app — where alerts go and where commute times are measured from.
+          Deployment-wide defaults — a fallback commute origin for browsing and for anyone who sets up alerts
+          without giving their own work address. Email alerts themselves are set up per saved search, not here.
         </p>
       </div>
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         {error && <p className="text-sm text-red-600">{error}</p>}
         {saved && <p className="text-sm text-green-600">Saved.</p>}
-
-        <label className="flex flex-col gap-1 text-sm">
-          Alert email
-          <input
-            type="email"
-            placeholder="you@example.com"
-            className="border rounded px-2 py-1 border-black/15 dark:border-white/20 bg-transparent"
-            value={values.alertEmail ?? ""}
-            onChange={(e) => setValues((prev) => ({ ...prev, alertEmail: e.target.value }))}
-          />
-          <span className="text-xs text-black/50 dark:text-white/50">
-            Where immediate/digest notifications for saved searches are sent.
-          </span>
-        </label>
 
         <label className="flex flex-col gap-1 text-sm relative">
           Work address
@@ -183,6 +178,36 @@ export default function SettingsPage() {
             Currently located at {values.workLatitude.toFixed(5)}, {values.workLongitude.toFixed(5)}
           </p>
         )}
+
+        <div className="border border-black/10 dark:border-white/15 rounded-lg p-4 flex flex-col gap-2">
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={values.useGoogleDirections}
+              onChange={(e) => setValues((prev) => ({ ...prev, useGoogleDirections: e.target.checked }))}
+            />
+            <span>
+              Use the Google Directions API for real car/bike/transit routing
+              <br />
+              <span className="text-xs text-black/50 dark:text-white/50">
+                Costs money past Google&apos;s free tier — off by default. When off, commute estimates use free
+                alternatives (OSRM for car/bike, a walk-to-station heuristic for transit) instead.
+              </span>
+            </span>
+          </label>
+          {values.useGoogleDirections && (
+            <label className="flex flex-col gap-1 text-sm mt-1">
+              App password (required to enable this)
+              <input
+                type="password"
+                className="border rounded px-2 py-1 border-black/15 dark:border-white/20 bg-transparent"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+              />
+            </label>
+          )}
+        </div>
 
         <button
           type="submit"
