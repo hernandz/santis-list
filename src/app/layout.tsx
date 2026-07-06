@@ -52,6 +52,9 @@ export default function RootLayout({
             <Link href="/watches" className="text-black/70 dark:text-white/70 hover:underline whitespace-nowrap">
               Saved Searches
             </Link>
+            <Link href="/rent-map" className="text-black/70 dark:text-white/70 hover:underline whitespace-nowrap">
+              Rent Map
+            </Link>
             <Link href="/settings" className="text-black/70 dark:text-white/70 hover:underline whitespace-nowrap">
               Settings
             </Link>
