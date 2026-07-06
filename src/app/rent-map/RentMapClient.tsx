@@ -45,20 +45,18 @@ function median(values: number[]): number {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
-// Same green-at-min/yellow-at-median/red-at-max scaling as the per-listing
-// price coloring on the feed (see medianRelativeColor in app/page.tsx), just
-// applied one level up: here the "listings" being compared are neighborhood
-// medians, not individual prices, so the reference points are the min/
-// median/max *of those medians* across every neighborhood shown on this map.
-function fillColorFor(value: number, lo: number, mid: number, hi: number): string {
-  if (lo === hi) return hueColor(60);
-  let t: number;
-  if (value <= mid) {
-    t = mid === lo ? 0 : (value - mid) / (mid - lo);
-  } else {
-    t = hi === mid ? 0 : (value - mid) / (hi - mid);
-  }
-  t = Math.min(1, Math.max(-1, t));
+// Same fixed-percentage-band scaling as the per-listing price coloring on
+// the feed (see medianRelativeColor in app/page.tsx), just applied one level
+// up: here the "listings" being compared are neighborhood medians, not
+// individual prices, so the reference point is the median *of those
+// medians* across every neighborhood shown on this map. Full red at 35%+
+// above that, full green at 35%+ below — not the actual min/max neighborhood
+// medians — so the color always means the same relative distance regardless
+// of how wide this particular city/bedroom-count's spread happens to be.
+const MEDIAN_COLOR_BAND = 0.35;
+function fillColorFor(value: number, mid: number): string {
+  if (mid === 0) return hueColor(60);
+  const t = Math.min(1, Math.max(-1, (value / mid - 1) / MEDIAN_COLOR_BAND));
   return hueColor(60 - t * 60);
 }
 
@@ -114,7 +112,7 @@ export function RentMapClient({ city, bedrooms }: { city: string; bedrooms: stri
   function styleFor(feature?: Feature): PathOptions {
     const m = feature?.properties?.median as number | undefined;
     if (m == null) return { color: "#6b7280", weight: 1, fillOpacity: 0 };
-    const fill = fillColorFor(m, lo, mid, hi);
+    const fill = fillColorFor(m, mid);
     return { color: "#00000033", weight: 1, fillColor: fill, fillOpacity: 0.55 };
   }
 
