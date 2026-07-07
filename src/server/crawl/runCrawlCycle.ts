@@ -84,6 +84,40 @@ function cachedSearch(
   return promise;
 }
 
+// Craigslist recency-caps each distinctly-filtered search to roughly 360
+// results (verified empirically: a real, 11-day-old, still-live Oakland
+// listing had already scrolled past that cap in an unfiltered "eby" search,
+// but reappeared once the query was narrowed to a ~$700-wide price band) —
+// so a single search per subarea silently drops listings that are pushed out
+// purely by that subarea's posting volume, not because they're actually
+// stale. Each distinctly-priced search gets its own independent ~360-result
+// budget, so splitting a wide price range into several narrower bands
+// recovers listings a single broad search would miss. This applies to
+// per-watch searches too, not just the full-city crawl — a watch scoped to
+// one neighborhood still searches its whole subarea under the hood
+// (Craigslist has no finer-grained area filter than subarea), so it's
+// exposed to the exact same cap. Self-scaling: a watch whose own price range
+// is already narrower than these breakpoints collapses back to one band, so
+// this only adds requests for watches with wide/unbounded price ranges.
+const PRICE_BAND_BREAKPOINTS = [1500, 2000, 2500, 3000, 3500, 4000, 5000, 7000];
+
+function priceBandsFor(
+  minPrice: number | null,
+  maxPrice: number | null,
+): Array<{ minPrice: number | null; maxPrice: number | null }> {
+  const relevant = PRICE_BAND_BREAKPOINTS.filter(
+    (b) => (minPrice == null || b > minPrice) && (maxPrice == null || b < maxPrice),
+  );
+  if (relevant.length === 0) return [{ minPrice, maxPrice }];
+
+  const bounds = [minPrice, ...relevant, maxPrice];
+  const bands: Array<{ minPrice: number | null; maxPrice: number | null }> = [];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    bands.push({ minPrice: bounds[i], maxPrice: bounds[i + 1] });
+  }
+  return bands;
+}
+
 // Craigslist's sub-area codes (e.g. "brk", "mnh") are an exact enum it
 // recognizes directly, unlike free-text neighborhood keywords — so unlike the
 // old per-neighborhood query= search, issuing one search per subarea and
@@ -91,19 +125,20 @@ function cachedSearch(
 // optimization: it narrows Craigslist's own recency-capped result window per
 // search, it does not itself determine neighborhood matches.
 async function searchAllSubareas(source: ListingSource, watch: Watch, cache: SearchCache): Promise<RawListing[]> {
-  if (watch.subareas.length === 0) {
-    return cachedSearch(source, cache, { city: watch.city, minPrice: watch.minPrice, maxPrice: watch.maxPrice });
-  }
+  const bands = priceBandsFor(watch.minPrice, watch.maxPrice);
+  const subareas = watch.subareas.length === 0 ? [null] : watch.subareas;
 
   const byExternalId = new Map<string, RawListing>();
-  for (const subarea of watch.subareas) {
-    const results = await cachedSearch(source, cache, {
-      city: watch.city,
-      subarea,
-      minPrice: watch.minPrice,
-      maxPrice: watch.maxPrice,
-    });
-    for (const raw of results) byExternalId.set(raw.externalId, raw);
+  for (const subarea of subareas) {
+    for (const band of bands) {
+      const results = await cachedSearch(source, cache, {
+        city: watch.city,
+        subarea,
+        minPrice: band.minPrice,
+        maxPrice: band.maxPrice,
+      });
+      for (const raw of results) byExternalId.set(raw.externalId, raw);
+    }
   }
   return Array.from(byExternalId.values());
 }
@@ -476,17 +511,22 @@ async function runFullCityCrawlUnguarded(): Promise<FullCrawlSummary> {
     const restrictedAreas = override ? areas.filter((a) => override.includes(a.code)) : areas;
     const subareas = restrictedAreas.length > 0 ? restrictedAreas.map((a) => a.code) : [null];
 
-    // Same per-externalId de-dup across subareas as searchAllSubareas, just
-    // with no watch/price filter — one search per subarea covers more of a
-    // huge metro than a single citywide search would (Craigslist's own
-    // results are recency-capped per search).
+    // Same per-externalId de-dup across subareas as searchAllSubareas, plus
+    // the same price-band splitting (see priceBandsFor) since this crawl has
+    // no price filter at all — the widest possible range, and so the case
+    // most exposed to Craigslist's per-search recency cap.
     const byExternalId = new Map<string, RawListing>();
     for (const subarea of subareas) {
-      try {
-        const results = await source.search({ city, subarea, minPrice: null, maxPrice: null });
-        for (const raw of results) byExternalId.set(raw.externalId, raw);
-      } catch (err) {
-        console.error(`Full-city crawl search failed for ${city}/${subarea ?? "(whole city)"}:`, err);
+      for (const band of priceBandsFor(null, null)) {
+        try {
+          const results = await source.search({ city, subarea, minPrice: band.minPrice, maxPrice: band.maxPrice });
+          for (const raw of results) byExternalId.set(raw.externalId, raw);
+        } catch (err) {
+          console.error(
+            `Full-city crawl search failed for ${city}/${subarea ?? "(whole city)"} [${band.minPrice ?? "-"}-${band.maxPrice ?? "-"}]:`,
+            err,
+          );
+        }
       }
     }
 
