@@ -454,13 +454,27 @@ export async function runFullCityCrawl(): Promise<FullCrawlSummary> {
   }
 }
 
+// Restricts which of a city's subareas the full-city crawl actually covers —
+// distinct from getCraigslistAreas, which still returns every subarea for the
+// per-watch subarea picker UI. SF Bay Area's full metro (6 subareas) means a
+// huge first-time detail-fetch backlog at ~3s/request serialized; narrowed to
+// just San Francisco + East Bay (the only way to reach Oakland — Craigslist
+// has no subarea finer than "East Bay") since that's what this crawl and the
+// Rent Map actually need right now. Cities absent from this map use every
+// subarea they have, unrestricted.
+const FULL_CRAWL_SUBAREA_OVERRIDES: Record<string, string[]> = {
+  sfbay: ["sfc", "eby"],
+};
+
 async function runFullCityCrawlUnguarded(): Promise<FullCrawlSummary> {
   const source = sources.CRAIGSLIST;
   const summary: FullCrawlSummary = { listingsSeen: 0, newListings: 0 };
 
   for (const { value: city } of SUPPORTED_CITIES) {
     const areas = getCraigslistAreas(city);
-    const subareas = areas.length > 0 ? areas.map((a) => a.code) : [null];
+    const override = FULL_CRAWL_SUBAREA_OVERRIDES[city];
+    const restrictedAreas = override ? areas.filter((a) => override.includes(a.code)) : areas;
+    const subareas = restrictedAreas.length > 0 ? restrictedAreas.map((a) => a.code) : [null];
 
     // Same per-externalId de-dup across subareas as searchAllSubareas, just
     // with no watch/price filter — one search per subarea covers more of a
