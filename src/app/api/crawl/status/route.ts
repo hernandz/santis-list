@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/server/db/prisma";
-import { isCrawlInProgress, getLastCrawlResult, getCrawlProgress } from "@/server/crawl/runCrawlCycle";
+import {
+  isCrawlInProgress,
+  getLastCrawlResult,
+  getCrawlProgress,
+  isFullCrawlInProgress,
+} from "@/server/crawl/runCrawlCycle";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +22,9 @@ export async function GET() {
       lastResult: getLastCrawlResult(),
       progress: getCrawlProgress(),
       mostRecentListingSeenAt: _max.firstSeenAt,
+      // Mutually exclusive with inProgress — the two share a lock (see
+      // runCrawlCycle.ts) since they'd otherwise race on the same rows.
+      fullCrawlInProgress: isFullCrawlInProgress(),
     },
     { headers: { "Cache-Control": "no-store" } },
   );

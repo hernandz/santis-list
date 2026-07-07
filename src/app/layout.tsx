@@ -52,6 +52,7 @@ export default function RootLayout({
             <Link href="/watches" className="text-black/70 dark:text-white/70 hover:underline whitespace-nowrap">
               Saved Searches
             </Link>
+            <span aria-hidden className="w-px h-4 bg-black/10 dark:bg-white/15" />
             <Link href="/rent-map" className="text-black/70 dark:text-white/70 hover:underline whitespace-nowrap">
               Rent Map
             </Link>

@@ -18,6 +18,7 @@ type CrawlStatus = {
   lastResult: { summary: CrawlSummary; finishedAt: string; failed: boolean; error?: string } | null;
   progress: CrawlProgress | null;
   mostRecentListingSeenAt: string | null;
+  fullCrawlInProgress: boolean;
 };
 
 // Poll quickly while a crawl is actually running (so the progress bar feels
@@ -60,7 +61,7 @@ export function CrawlStatusBadge() {
         const body: CrawlStatus = await res.json();
         if (cancelled) return;
         setStatus(body);
-        timerRef.current = setTimeout(poll, body.inProgress ? POLL_MS_ACTIVE : POLL_MS_IDLE);
+        timerRef.current = setTimeout(poll, body.inProgress || body.fullCrawlInProgress ? POLL_MS_ACTIVE : POLL_MS_IDLE);
       } catch {
         // transient — keep showing the last known status rather than blanking it
         if (!cancelled) timerRef.current = setTimeout(poll, POLL_MS_IDLE);
@@ -75,6 +76,18 @@ export function CrawlStatusBadge() {
   }, []);
 
   if (!status) return null;
+
+  if (status.fullCrawlInProgress) {
+    return (
+      <span
+        className="flex items-center gap-1.5 text-xs text-black/60 dark:text-white/60"
+        title="Crawling every subarea of every supported city with no price filter — can take several minutes."
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" aria-hidden />
+        <span className="whitespace-nowrap">Full-city crawl running…</span>
+      </span>
+    );
+  }
 
   if (status.inProgress) {
     const progress = status.progress;
