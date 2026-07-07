@@ -2,6 +2,7 @@ import Link from "next/link";
 import { prisma } from "@/server/db/prisma";
 import { DeleteWatchButton } from "./DeleteWatchButton";
 import { ForceCrawlButton } from "./ForceCrawlButton";
+import { ForceFullCrawlButton } from "./ForceFullCrawlButton";
 import { PauseToggleButton } from "./PauseToggleButton";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +21,7 @@ export default async function WatchesPage() {
         </div>
         <div className="flex items-center gap-3">
           <ForceCrawlButton />
+          <ForceFullCrawlButton />
           <Link href="/watches/new" className="px-4 py-2 rounded bg-foreground text-background text-sm h-fit">
             New saved search
           </Link>
