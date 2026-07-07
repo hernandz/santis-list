@@ -10,7 +10,6 @@ import { readDiskCache, readDiskCacheStale, writeDiskCache, clearDiskCache } fro
 // null where the source dataset has no such grouping (SF, LA).
 type Boundary = { name: string; geometry: GeoJsonGeometry; region: string | null };
 
-const USER_AGENT = "Mozilla/5.0 (compatible; RentalWatchBot/0.1; personal-use apartment alert crawler)";
 const BOUNDARIES_TTL_MS = 30 * 24 * 60 * 60 * 1000; // official boundaries essentially never change
 
 type GeoJsonFeatureCollection = {
@@ -53,12 +52,11 @@ async function fetchNycNeighborhoods(): Promise<Boundary[]> {
 // (the top search hit) returns empty geometry — j2bu-swwd is the one with real polygons.
 // region is tagged "San Francisco" (matching the "sfc" sub-area's label) so that
 // selecting the East Bay sub-area below doesn't surface SF neighborhoods as options.
+// Stored locally like NYC/LA (see readLocalGeoJson) — same reasoning: these
+// boundaries don't change, and a live source shouldn't be a single point of
+// failure for something this static. Downloaded 2026-07-07.
 async function fetchSfNeighborhoods(): Promise<Boundary[]> {
-  const res = await fetch("https://data.sfgov.org/resource/j2bu-swwd.geojson?$limit=5000", {
-    headers: { "User-Agent": USER_AGENT },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch SF neighborhood boundaries: ${res.status}`);
-  const body: GeoJsonFeatureCollection = await res.json();
+  const body = readLocalGeoJson("sf-neighborhoods.geojson.json");
   return body.features.map((f) => ({
     name: String(f.properties.nhood),
     geometry: f.geometry,
@@ -71,12 +69,9 @@ async function fetchSfNeighborhoods(): Promise<Boundary[]> {
 // sb4q-6bkc is the one with real polygons (verified live 2026-07-06: 131
 // features, none null). Finer-grained than the city-level fallback below,
 // same relationship as fetchLaCityNeighborhoods has to fetchLaCountyNeighborhoods.
+// Stored locally — downloaded 2026-07-07, same reasoning as fetchSfNeighborhoods.
 async function fetchOaklandNeighborhoods(): Promise<Boundary[]> {
-  const res = await fetch("https://data.oaklandca.gov/resource/sb4q-6bkc.geojson?$limit=500", {
-    headers: { "User-Agent": USER_AGENT },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch Oakland neighborhood boundaries: ${res.status}`);
-  const body: GeoJsonFeatureCollection = await res.json();
+  const body = readLocalGeoJson("oakland-neighborhoods.geojson.json");
   return body.features.map((f) => ({
     name: String(f.properties.neighbhd),
     geometry: f.geometry,
@@ -89,26 +84,18 @@ async function fetchOaklandNeighborhoods(): Promise<Boundary[]> {
 // and all of the Peninsula/South Bay besides San Jose) — same role as
 // fetchLaCountyNeighborhoods plays for LA County cities outside LA proper.
 // Source: CDTFA's statewide city-boundaries layer (the same authoritative
-// source California itself uses for tax-rate jurisdiction, and already
-// reachable/no-auth like every other boundary source here). excludeCities
+// source California itself uses for tax-rate jurisdiction). excludeCities
 // drops cities already covered by a finer per-neighborhood layer elsewhere.
 // Some cities (e.g. Alameda's Bay Farm Island) are disjoint and come back as
 // two separate rows sharing a name — left as-is; that's a truthful shape, not
 // a bug (same pattern as MultiPolygon geometries elsewhere in this file).
-async function fetchCdtfaCityBoundaries(
-  counties: string[],
-  region: string,
-  excludeCities: string[] = [],
-): Promise<Boundary[]> {
-  const where = `CDTFA_COUNTY IN (${counties.map((c) => `'${c}'`).join(",")})`;
-  const url =
-    "https://services3.arcgis.com/uknczv4rpevve42E/arcgis/rest/services/" +
-    "California_Cities_and_Identifiers_Blue_Version_view/FeatureServer/2/query" +
-    `?where=${encodeURIComponent(where)}&outFields=CDTFA_CITY&outSR=4326&f=geojson&resultRecordCount=1000`;
-  const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
-  if (!res.ok) throw new Error(`Failed to fetch ${region} city boundaries: ${res.status}`);
-  const body: GeoJsonFeatureCollection = await res.json();
+// Stored locally as one combined file covering all four counties this app
+// uses (downloaded 2026-07-07) — filtered by county/excluded city here in
+// code instead of via separate live queries per sub-region.
+function fetchCdtfaCityBoundaries(counties: string[], region: string, excludeCities: string[] = []): Boundary[] {
+  const body = readLocalGeoJson("bayarea-cdtfa-cities.geojson.json");
   return body.features
+    .filter((f) => counties.includes(String(f.properties.CDTFA_COUNTY ?? "").trim()))
     .filter((f) => !excludeCities.includes(String(f.properties.CDTFA_CITY ?? "").trim()))
     .map((f) => ({ name: String(f.properties.CDTFA_CITY), geometry: f.geometry, region }));
 }
@@ -131,14 +118,9 @@ async function fetchCdtfaCityBoundaries(
 // stable, no-auth ArcGIS endpoint after Zillow stopped hosting its own
 // download page. Verified live 2026-07-06: 17 features, none null, real
 // irregular shapes (e.g. "Rose Garden" has 564 vertices — nothing like a
-// circle).
+// circle). Stored locally — downloaded 2026-07-07.
 async function fetchSanJoseNeighborhoods(): Promise<Boundary[]> {
-  const url =
-    "https://gispub.epa.gov/arcgis/rest/services/OEI/Zillow_Neighborhoods/MapServer/1/query" +
-    "?where=City%3D%27San+Jose%27+AND+State%3D%27CA%27&outFields=Name&outSR=4326&f=geojson&resultRecordCount=1000";
-  const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
-  if (!res.ok) throw new Error(`Failed to fetch San Jose neighborhood boundaries: ${res.status}`);
-  const body: GeoJsonFeatureCollection = await res.json();
+  const body = readLocalGeoJson("sanjose-neighborhoods.geojson.json");
   return body.features.map((f) => ({ name: String(f.properties.Name), geometry: f.geometry, region: "South Bay" }));
 }
 
