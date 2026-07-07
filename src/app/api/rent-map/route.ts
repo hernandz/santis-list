@@ -21,16 +21,29 @@ export async function GET(request: Request) {
   // One neighborhood-level query (not per-listing) — same median/min/max
   // stats as the per-listing price coloring on the feed, but grouped across
   // the whole city for one bedroom count instead of per-listing.
-  const rows = await prisma.$queryRaw<RentRow[]>`
-    SELECT "boundaryNeighborhood" AS neighborhood,
-           percentile_cont(0.5) WITHIN GROUP (ORDER BY price) AS median,
-           MIN(price) AS min,
-           MAX(price) AS max,
-           COUNT(*) AS count
-    FROM "Listing"
-    WHERE city = ${city} AND bedrooms = ${bedrooms} AND price IS NOT NULL AND "boundaryNeighborhood" IS NOT NULL
-    GROUP BY "boundaryNeighborhood"
-  `;
+  const [rows, [{ oldest }], settings] = await Promise.all([
+    prisma.$queryRaw<RentRow[]>`
+      SELECT "boundaryNeighborhood" AS neighborhood,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY price) AS median,
+             MIN(price) AS min,
+             MAX(price) AS max,
+             COUNT(*) AS count
+      FROM "Listing"
+      WHERE city = ${city} AND bedrooms = ${bedrooms} AND price IS NOT NULL AND "boundaryNeighborhood" IS NOT NULL
+      GROUP BY "boundaryNeighborhood"
+    `,
+    // Oldest listing behind this exact map — postedAt (when it actually went
+    // up on Craigslist) rather than firstSeenAt (when our crawler found it),
+    // falling back to firstSeenAt for the rare listing whose detail-page
+    // fetch never succeeded. Scoped to the same rows the map is built from,
+    // so it reflects how far back this specific view's data goes.
+    prisma.$queryRaw<{ oldest: Date | null }[]>`
+      SELECT MIN(COALESCE("postedAt", "firstSeenAt")) AS oldest
+      FROM "Listing"
+      WHERE city = ${city} AND bedrooms = ${bedrooms} AND price IS NOT NULL AND "boundaryNeighborhood" IS NOT NULL
+    `,
+    prisma.settings.findUnique({ where: { id: "singleton" } }),
+  ]);
 
   const statsByName = new Map(
     rows.map((r) => [
@@ -44,5 +57,8 @@ export async function GET(request: Request) {
     .filter((b) => statsByName.has(b.name))
     .map((b) => ({ name: b.name, geometry: b.geometry, region: b.region, ...statsByName.get(b.name)! }));
 
-  return NextResponse.json({ neighborhoods }, { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json(
+    { neighborhoods, oldestListingAt: oldest, lastFullCrawlAt: settings?.lastFullCrawlAt ?? null },
+    { headers: { "Cache-Control": "no-store" } },
+  );
 }

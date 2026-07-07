@@ -182,6 +182,11 @@ model Settings {
   // deliberately a bit more friction than a plain checkbox, since flipping it
   // has a real dollar cost, not just a UI preference.
   useGoogleDirections Boolean  @default(false)
+  // Set at the end of a successful weekly/forced full-city crawl (see
+  // runFullCityCrawl) — persisted here (not just kept in memory like
+  // isCrawlInProgress/getLastCrawlResult) specifically so "how fresh is the
+  // Rent Map's data" survives a server restart, which in-memory state doesn't.
+  lastFullCrawlAt DateTime?
   updatedAt     DateTime @updatedAt
 }
 

@@ -422,7 +422,15 @@ export async function runFullCityCrawl(): Promise<FullCrawlSummary> {
   fullCrawlInProgress = true;
   try {
     const summary = await runFullCityCrawlUnguarded();
-    lastFullCrawlResult = { summary, finishedAt: new Date(), failed: false };
+    const finishedAt = new Date();
+    lastFullCrawlResult = { summary, finishedAt, failed: false };
+    // Persisted (not just kept in the in-memory lastFullCrawlResult above) so
+    // "how fresh is the Rent Map's data" survives a server restart.
+    await prisma.settings.upsert({
+      where: { id: "singleton" },
+      create: { id: "singleton", lastFullCrawlAt: finishedAt },
+      update: { lastFullCrawlAt: finishedAt },
+    });
     return summary;
   } catch (err) {
     lastFullCrawlResult = {

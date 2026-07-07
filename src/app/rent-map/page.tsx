@@ -21,9 +21,18 @@ const BEDROOM_OPTIONS = [
   { value: "4", label: "4 bedrooms" },
 ];
 
+function formatDate(iso: string | null): string | null {
+  if (!iso) return null;
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 export default function RentMapPage() {
   const [city, setCity] = useState<string>(VISIBLE_CITIES[0]?.value ?? "newyork");
   const [bedrooms, setBedrooms] = useState("1");
+  const [meta, setMeta] = useState<{ oldestListingAt: string | null; lastFullCrawlAt: string | null }>({
+    oldestListingAt: null,
+    lastFullCrawlAt: null,
+  });
 
   return (
     <div className="flex flex-col gap-6">
@@ -32,6 +41,11 @@ export default function RentMapPage() {
         <p className="text-sm text-black/60 dark:text-white/60">
           Median rent by neighborhood for a given bedroom count — green is cheapest, red is priciest, yellow is
           the median neighborhood. Same real, verified neighborhood boundaries used across the rest of the app.
+        </p>
+        <p className="text-xs text-black/50 dark:text-white/50 mt-1">
+          {formatDate(meta.oldestListingAt) ? <>Data goes back to {formatDate(meta.oldestListingAt)}</> : null}
+          {formatDate(meta.oldestListingAt) && formatDate(meta.lastFullCrawlAt) ? " · " : null}
+          {formatDate(meta.lastFullCrawlAt) ? <>Last full-city crawl {formatDate(meta.lastFullCrawlAt)}</> : null}
         </p>
       </div>
 
@@ -66,7 +80,7 @@ export default function RentMapPage() {
         </label>
       </div>
 
-      <RentMapClient city={city} bedrooms={bedrooms} />
+      <RentMapClient city={city} bedrooms={bedrooms} onMeta={setMeta} />
     </div>
   );
 }

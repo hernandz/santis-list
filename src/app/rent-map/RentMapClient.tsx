@@ -60,7 +60,15 @@ function fillColorFor(value: number, mid: number): string {
   return hueColor(60 - t * 60);
 }
 
-export function RentMapClient({ city, bedrooms }: { city: string; bedrooms: string }) {
+export function RentMapClient({
+  city,
+  bedrooms,
+  onMeta,
+}: {
+  city: string;
+  bedrooms: string;
+  onMeta?: (meta: { oldestListingAt: string | null; lastFullCrawlAt: string | null }) => void;
+}) {
   const [neighborhoods, setNeighborhoods] = useState<NeighborhoodRent[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -75,7 +83,10 @@ export function RentMapClient({ city, bedrooms }: { city: string; bedrooms: stri
           { cache: "no-store" },
         );
         const body = await res.json();
-        if (!cancelled) setNeighborhoods(body.neighborhoods ?? []);
+        if (!cancelled) {
+          setNeighborhoods(body.neighborhoods ?? []);
+          onMeta?.({ oldestListingAt: body.oldestListingAt ?? null, lastFullCrawlAt: body.lastFullCrawlAt ?? null });
+        }
       } catch {
         if (!cancelled) setNeighborhoods([]);
       } finally {
@@ -87,6 +98,7 @@ export function RentMapClient({ city, bedrooms }: { city: string; bedrooms: stri
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [city, bedrooms]);
 
   const { lo, mid, hi } = useMemo(() => {
