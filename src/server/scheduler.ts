@@ -1,5 +1,5 @@
 import cron from "node-cron";
-import { runCrawlCycle, runFullCityCrawl } from "./crawl/runCrawlCycle";
+import { runCrawlCycle, runFullCityCrawl, pruneOldListings } from "./crawl/runCrawlCycle";
 import { flushDailyDigests, flushHourlyDigests } from "./notify/digest";
 
 const CRAWL_INTERVAL_MINUTES = Number(process.env.CRAWL_INTERVAL_MINUTES ?? 20);
@@ -12,6 +12,10 @@ const DIGEST_DAILY_HOUR = Number(process.env.DIGEST_DAILY_HOUR ?? 8);
 // neighborhood rent data (the reason it exists) doesn't shift day to day.
 const FULL_CRAWL_HOUR = Number(process.env.FULL_CRAWL_HOUR ?? 3);
 const FULL_CRAWL_DAY_OF_WEEK = Number(process.env.FULL_CRAWL_DAY_OF_WEEK ?? 0); // 0 = Sunday
+// Daily — cheap (one DELETE query, no network requests), so there's no
+// reason to run it any less often than that; a listing crossing the 1-month
+// threshold shouldn't keep skewing the Rent Map's medians for up to a week.
+const PRUNE_HOUR = Number(process.env.PRUNE_HOUR ?? 4);
 // node-cron falls back to the process's ambient default timezone when none
 // is passed explicitly — that's whatever TZ happens to be set to (or the
 // host's own default if it isn't set at all). .env sets TZ for local dev,
@@ -79,7 +83,20 @@ export function startScheduler() {
     { timezone: SCHEDULER_TZ },
   );
 
+  cron.schedule(
+    `0 ${PRUNE_HOUR} * * *`,
+    async () => {
+      try {
+        const result = await pruneOldListings();
+        console.log("[scheduler] pruned old listings:", result);
+      } catch (err) {
+        console.error("[scheduler] prune failed:", err);
+      }
+    },
+    { timezone: SCHEDULER_TZ },
+  );
+
   console.log(
-    `[scheduler] started (tz=${SCHEDULER_TZ}) — crawl every ${CRAWL_INTERVAL_MINUTES}m, hourly digest at :05, daily digest at ${DIGEST_DAILY_HOUR}:00, full-city crawl weekly on day ${FULL_CRAWL_DAY_OF_WEEK} at ${FULL_CRAWL_HOUR}:00`,
+    `[scheduler] started (tz=${SCHEDULER_TZ}) — crawl every ${CRAWL_INTERVAL_MINUTES}m, hourly digest at :05, daily digest at ${DIGEST_DAILY_HOUR}:00, full-city crawl weekly on day ${FULL_CRAWL_DAY_OF_WEEK} at ${FULL_CRAWL_HOUR}:00, prune old listings daily at ${PRUNE_HOUR}:00`,
   );
 }

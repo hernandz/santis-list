@@ -7,7 +7,7 @@ import { buildPauseUrl } from "@/lib/pauseToken";
 import { getNeighborhoodForPoint } from "@/server/geo/neighborhoodBoundaries";
 import { SUPPORTED_CITIES } from "@/lib/craigslistCities";
 import { getCraigslistAreas } from "./craigslistAreas";
-import { craigslistSource } from "./sources/craigslist";
+import { craigslistSource, ListingGoneError } from "./sources/craigslist";
 import type { ListingSource, RawListing } from "./sources/types";
 
 const sources: Record<"CRAIGSLIST", ListingSource> = {
@@ -270,6 +270,15 @@ async function resolveListings(
           },
         });
       } catch (err) {
+        // A confirmed 404/410 means Craigslist itself says this listing is
+        // gone — delete it outright rather than leaving stale data around
+        // forever (WatchMatch/NotificationListing/CommuteCache rows for it
+        // cascade-delete too). Any other error (network blip, parsing
+        // change) is left in place to retry next cycle, same as before.
+        if (err instanceof ListingGoneError) {
+          await prisma.listing.delete({ where: { id: listing!.id } });
+          continue;
+        }
         console.error(`Failed to fetch details for ${raw.url}:`, err);
       }
     }
@@ -473,4 +482,25 @@ async function runFullCityCrawlUnguarded(): Promise<FullCrawlSummary> {
   }
 
   return summary;
+}
+
+export type PruneSummary = { deleted: number };
+
+const LISTING_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // ~1 month
+
+// A listing this old is very likely long gone from Craigslist even if it
+// never hit a confirmed 404/410 (e.g. Craigslist's search results just
+// stopped surfacing it, so no crawl ever re-checked its detail page) — and
+// even a genuinely still-live one this stale is bad data to keep feeding
+// into the Rent Map's median-rent stats. WatchMatch/NotificationListing/
+// CommuteCache rows for a pruned listing cascade-delete with it (see
+// schema.prisma's onDelete: Cascade on each).
+export async function pruneOldListings(): Promise<PruneSummary> {
+  const cutoff = new Date(Date.now() - LISTING_MAX_AGE_MS);
+  const { count } = await prisma.listing.deleteMany({
+    where: {
+      OR: [{ postedAt: { lt: cutoff } }, { postedAt: null, firstSeenAt: { lt: cutoff } }],
+    },
+  });
+  return { deleted: count };
 }

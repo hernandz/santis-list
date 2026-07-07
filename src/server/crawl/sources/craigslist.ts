@@ -163,7 +163,13 @@ async function fetchDetails(url: string): Promise<ListingDetails> {
   const attrText = $("span.attr.important").first().text().trim();
   const { bedrooms, bathrooms } = parseBedBath(attrText);
 
-  const postedDatetime = $("p.postinginfo time.date").first().attr("datetime");
+  // A renewed/edited listing has TWO of these — "posted: ..." then, later in
+  // the DOM, "updated: ..." — and a listing this stale (verified live
+  // 2026-07-07: one renewed a month after its original post date) is exactly
+  // what pruneOldListings would otherwise delete despite it being actively
+  // renewed. .last() gets whichever is more recent: the update if one
+  // occurred, otherwise the original posted date (the only element present).
+  const postedDatetime = $("p.postinginfo time.date").last().attr("datetime");
   const postedAt = postedDatetime ? new Date(postedDatetime) : null;
 
   const mapEl = $("div#map.viewposting").first();

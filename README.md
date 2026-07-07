@@ -19,6 +19,7 @@ Built to be shared with friends without needing real user accounts: browsing and
 - **Notifications** — immediate per-match email, or hourly/daily digests, sent to whichever Profile a search's alerts are attached to; every email includes a one-click "pause this search" link that needs no login.
 - **Settings** (`/settings`) — deployment-wide work address (fallback commute origin, geocoded with autocomplete confirmation), the Google Directions toggle, light/dark/system theme, and a "clear cache & re-crawl" maintenance action.
 - **Weekly full-city crawl** — independent of any saved search, crawls every subarea of every supported city once a week with no price/bed/bath filter, to keep browsing and the Rent Map populated beyond whatever active watches happen to cover. Off-peak by default (`FULL_CRAWL_HOUR`/`FULL_CRAWL_DAY_OF_WEEK`); shares the regular crawl's lock so the two never race on the same rows. A "Force full-city crawl" button on Saved Searches runs it on demand (e.g. to seed the Rent Map immediately instead of waiting for the schedule) — expect it to take several minutes.
+- **Old listings get deleted, not just hidden** — a daily job (`PRUNE_HOUR`) permanently removes any listing older than ~1 month (by posted/renewed date, falling back to when the crawler first saw it), and a confirmed-gone listing (Craigslist itself returns 404/410) is deleted immediately rather than left stale. Keeps the Rent Map's medians from being skewed by long-expired listings. A renewed listing (Craigslist shows an "updated:" date past the original "posted:" one) is treated as freshly posted as of that renewal, so it won't get pruned just because it was first listed a while ago.
 - **Live crawl status** (top-right nav) — a progress bar while a crawl is running; otherwise "Data as of {time}", derived from the most recently-seen listing so it stays accurate across server restarts (crawl-cycle results themselves are only kept in memory).
 - **Optional password gate** — set `APP_PASSWORD` to require a login before anyone can use the site at all.
 
@@ -68,6 +69,7 @@ If it ever hangs or crashes, `pkill -f "next dev"` then re-run `npm run dev` —
 - `npm run digests:once` — force an hourly + daily digest flush immediately.
 - `npm run backfill:geo` — backfill bedrooms/bathrooms/coordinates for listings that predate that enrichment.
 - `npm run backfill:boundary-neighborhood` — backfill `Listing.boundaryNeighborhood` for listings that have coordinates but predate that column (one-time, after pulling a schema update that adds it).
+- `npm run prune:once` — force the daily "delete listings older than ~1 month" job immediately.
 - `npx prisma studio` — browse/edit the database in a GUI (also how you'd manage `Profile` rows today — there's no admin UI for that yet).
 
 ### Managing who's signed up for alerts

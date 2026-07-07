@@ -12,7 +12,8 @@
     "crawl:full-city-once": "tsx scripts/full-city-crawl-once.ts",
     "digests:once": "tsx scripts/flush-digests-once.ts",
     "backfill:geo": "tsx scripts/backfill-geo.ts",
-    "backfill:boundary-neighborhood": "tsx scripts/backfill-boundary-neighborhood.ts"
+    "backfill:boundary-neighborhood": "tsx scripts/backfill-boundary-neighborhood.ts",
+    "prune:once": "tsx scripts/prune-listings-once.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",
