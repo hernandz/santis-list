@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { pointInGeometry, type GeoJsonGeometry } from "./pointInPolygon";
 import { readDiskCache, readDiskCacheStale, writeDiskCache, clearDiskCache } from "@/server/diskCache";
 
@@ -15,12 +17,31 @@ type GeoJsonFeatureCollection = {
   features: { properties: Record<string, unknown>; geometry: Boundary["geometry"] }[];
 };
 
+// Bundled under public/ (not src/) specifically because the Dockerfile's
+// production stage only copies node_modules/.next/public/prisma — src/ never
+// makes it into the deployed image, so fs.readFileSync against a src/ path
+// would 404/ENOENT in production despite working fine in local dev. public/
+// is a hard Next.js requirement in every deploy mode, so it's guaranteed to
+// exist regardless of how the image gets built (Dockerfile here, or
+// Railway's own Nixpacks). These files being technically web-reachable at
+// /geo-data/... is a non-issue — it's the exact same public government
+// open-data anyone could already pull from the source APIs directly.
+function readLocalGeoJson(filename: string): GeoJsonFeatureCollection {
+  const raw = fs.readFileSync(path.join(process.cwd(), "public", "geo-data", filename), "utf-8");
+  return JSON.parse(raw);
+}
+
+// NYC's and LA's boundaries are stored locally (see readLocalGeoJson) rather
+// than live-fetched like every other city here — verified live 2026-07-07
+// that data.cityofnewyork.us returns a flat 403 from Railway's production
+// network (not a rate limit; an outright block), and with no disk cache yet
+// on a fresh deploy there's nothing to fall back to, so NYC boundaries were
+// completely unavailable in production. Real city/borough boundaries don't
+// change on any timescale that matters here, so — same reasoning as the
+// Muni/Caltrain/VTA station data — hardcoding beats depending on a live
+// source that may simply not be reachable at runtime. Downloaded 2026-07-07.
 async function fetchNycNeighborhoods(): Promise<Boundary[]> {
-  const res = await fetch("https://data.cityofnewyork.us/resource/9nt8-h7nd.geojson?$limit=5000", {
-    headers: { "User-Agent": USER_AGENT },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch NYC neighborhood boundaries: ${res.status}`);
-  const body: GeoJsonFeatureCollection = await res.json();
+  const body = readLocalGeoJson("nyc-neighborhoods.geojson.json");
   return body.features.map((f) => ({
     name: String(f.properties.ntaname),
     geometry: f.geometry,
@@ -138,13 +159,12 @@ async function fetchBayAreaNeighborhoods(): Promise<Boundary[]> {
 
 // LA City's own neighborhood layer (finer-grained within LA proper — e.g. it
 // has "Sawtelle" as its own polygon, which the countywide layer below folds
-// into the larger "West Los Angeles").
+// into the larger "West Los Angeles"). Stored locally like NYC above — same
+// reasoning (these boundaries don't change on any relevant timescale, and a
+// live source shouldn't be a single point of failure for something this
+// static). Downloaded 2026-07-07.
 async function fetchLaCityNeighborhoods(): Promise<Boundary[]> {
-  const res = await fetch("https://geohub.lacity.org/datasets/d6c55385a0e749519f238b77135eafac_0.geojson", {
-    headers: { "User-Agent": USER_AGENT },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch LA city neighborhood boundaries: ${res.status}`);
-  const body: GeoJsonFeatureCollection = await res.json();
+  const body = readLocalGeoJson("la-city-neighborhoods.geojson.json");
   return body.features.map((f) => ({ name: String(f.properties.name), geometry: f.geometry, region: null }));
 }
 
@@ -152,15 +172,11 @@ async function fetchLaCityNeighborhoods(): Promise<Boundary[]> {
 // covers the whole county, so unlike the LA-city-only layer above, it
 // includes every independent city Craigslist's LA metro spans (Santa Monica,
 // Beverly Hills, Culver City, Long Beach, Pasadena, etc.) plus unincorporated
-// communities. Verified live 2026-07-03: 373 features, outSR=4326 gives plain
-// lat/lon (the service's default CRS is a feet-based state-plane projection).
+// communities. 373 features, outSR=4326 gives plain lat/lon (the service's
+// default CRS is a feet-based state-plane projection). Stored locally —
+// downloaded 2026-07-07, same reasoning as fetchLaCityNeighborhoods above.
 async function fetchLaCountyNeighborhoods(): Promise<Boundary[]> {
-  const url =
-    "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Political_Boundaries/MapServer/23/query" +
-    "?where=1%3D1&outFields=COMMUNITY,LCITY&outSR=4326&f=geojson&resultRecordCount=1000";
-  const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
-  if (!res.ok) throw new Error(`Failed to fetch LA County neighborhood boundaries: ${res.status}`);
-  const body: GeoJsonFeatureCollection = await res.json();
+  const body = readLocalGeoJson("la-county-neighborhoods.geojson.json");
   return body.features
     .filter((f) => String(f.properties.LCITY ?? "").trim() !== "Los Angeles") // covered by the finer-grained layer above
     .map((f) => {
